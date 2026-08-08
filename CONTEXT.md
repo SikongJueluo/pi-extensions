@@ -17,8 +17,12 @@ An observation mode in which an Authorization Judge records a verdict without ch
 _Avoid_: Dry run
 
 **Enforce Mode**:
-An authority mode in which selected Authorization Judge verdicts may directly determine whether an operation executes.
+An authority mode in which an Authorization Judge's allow verdict may approve an operation. In the initial rollout, deny and defer still pass to the next authority.
 _Avoid_: Production mode
+
+**Judge Participation**:
+The presence of an Authorization Judge in the configured authorizer chain. Participation determines whether the Judge is consulted, independently of whether it is in Shadow Mode or Enforce Mode.
+_Avoid_: Enabled, installed
 
 **Defer**:
 A verdict stating that the available information or the judge itself is insufficient to decide, leaving the decision to the next authority.
