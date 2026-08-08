@@ -1,0 +1,9 @@
+{
+  "name": "pi-extensions",
+  "description": "Persional pi code agent extentsions",
+  "scripts": {
+    "check": "pnpm -r check",
+    "test": "pnpm -r test"
+  },
+  "type": "module"
+}
