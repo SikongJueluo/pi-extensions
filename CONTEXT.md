@@ -43,3 +43,11 @@ _Avoid_: Parent context, current session
 **Conversation Owner**:
 The session whose conversation entries are supplied to an Authorization Judge. It may differ from the Requesting Session for forwarded requests.
 _Avoid_: Requester
+
+**Judgment Evidence**:
+The minimal operation, execution, user-intent, and forwarded-provenance facts supplied to an Authorization Judge for one verdict. Adapter validation state and review-log metadata are not Judgment Evidence.
+_Avoid_: Judge request, full request context
+
+**Execution Working Directory**:
+The working directory of the Requesting Session in which an operation will execute and relative paths are resolved. For a forwarded request, it must not be replaced with the Serving Session's working directory.
+_Avoid_: Current cwd, parent cwd

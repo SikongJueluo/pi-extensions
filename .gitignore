@@ -143,5 +143,6 @@ vite.config.ts.timestamp-*
 .vite/
 
 # Vibe coding
+.workspace/
 .pi-subagents/
 .codegraph/
