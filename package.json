@@ -5,5 +5,11 @@
     "check": "pnpm -r check",
     "test": "pnpm -r test"
   },
-  "type": "module"
+  "type": "module",
+  "private": true,
+  "pi": {
+    "extensions": [
+      "./packages/pi-permission-inner-cmd/src/index.ts"
+    ]
+  }
 }
