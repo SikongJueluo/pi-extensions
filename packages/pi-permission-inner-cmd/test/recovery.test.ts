@@ -3,10 +3,10 @@ import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { recoverNativeBashCommand } from "../src/recovery";
 
 /** Build a minimal assistant message entry carrying the given content blocks. */
-function assistantEntry(content: unknown[]): SessionEntry {
+function assistantEntry(content: unknown[], id = "entry-1"): SessionEntry {
     return {
         type: "message",
-        id: "entry-1",
+        id,
         parentId: null,
         timestamp: "2026-08-08T00:00:00.000Z",
         message: {
@@ -154,6 +154,25 @@ describe("recoverNativeBashCommand", () => {
             ]),
         ];
         expect(recoverNativeBashCommand(entries, "call_1")).toBeUndefined();
+    });
+
+    it("returns the latest command when the id recurs across messages", () => {
+        // A cross-message id reuse resolves to the latest block, which is the
+        // call currently being authorized; the earlier block is already-
+        // resolved history and must not fail-closed the recovery.
+        const entries = [
+            assistantEntry(
+                [bashToolCall("call_1", "timeout 30s rm -rf /")],
+                "entry-a",
+            ),
+            assistantEntry(
+                [bashToolCall("call_1", "timeout 30s pnpm test")],
+                "entry-b",
+            ),
+        ];
+        expect(recoverNativeBashCommand(entries, "call_1")).toBe(
+            "timeout 30s pnpm test",
+        );
     });
 
     it("tolerates a malformed content block that is not a tool call", () => {

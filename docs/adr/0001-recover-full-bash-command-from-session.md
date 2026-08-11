@@ -8,12 +8,12 @@ status: accepted
 
 ## Decision
 
-For direct calls to Pi's native `bash` tool, capture the session manager at `session_start`. During authorization, use `details.toolCallId` to find exactly one matching assistant `toolCall` block in the current session and read its structured `arguments.command` value.
+For direct calls to Pi's native `bash` tool, capture the session manager at `session_start`. During authorization, walk the session in reverse to the latest assistant message containing a `toolCall` block whose `id` equals `details.toolCallId`, require exactly one such block *within that message*, and read its structured `arguments.command` value.
 
 Proceed only when all evidence agrees:
 
 - the request and recovered tool call both identify the native `bash` tool;
-- the tool-call ID has exactly one match;
+- the tool-call ID has exactly one match within the latest assistant message that contains it (a cross-message reuse resolves to the latest, which is the call being authorized);
 - `arguments.command` is a string;
 - the complete input matches the strict wrapper grammar;
 - the inner command is not another recognized wrapper.
@@ -35,7 +35,8 @@ The implementation must retain regression tests for:
 - inner `allow`, `ask`, and `deny` mapping;
 - compound input such as `timeout 60s pnpm test && git push`;
 - unsupported and nested wrapper syntax;
-- missing, duplicate, malformed, and forwarded session evidence;
+- missing, within-message duplicate, malformed, and forwarded session evidence;
+- a tool-call id reused across messages (resolved to the latest);
 - Authorizer registration and disposal.
 
 The end-to-end experiment confirmed that permission-system checks every Bash command unit but invokes the Authorizer once for the aggregated `ask`; an Authorizer `allow` then releases the complete tool call. See [context ownership](../research/ai-bash-context-ownership.md) and [minimal Bash judgment evidence](../research/ai-bash-judge-input-minimality.md) for the underlying permission and evidence boundaries.
