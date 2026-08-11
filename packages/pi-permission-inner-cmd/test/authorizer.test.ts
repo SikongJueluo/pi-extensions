@@ -402,6 +402,36 @@ describe("authorizeInnerCommand — fail-closed deferrals", () => {
     });
 });
 
+describe("authorizeInnerCommand — env wrapper", () => {
+    it("defers on an env wrapper with a debug log (non-transparent)", async () => {
+        const { verdict, log, check } = await run({
+            recoveredCommand: "env FOO=bar pnpm test",
+            states: { "pnpm test": "allow" },
+        });
+        expect(verdict.kind).toBe("defer");
+        // env is non-transparent: never unwrapped, so the inner command is not
+        // re-evaluated through the deterministic policy.
+        expect(check).toEqual([]);
+        expect(log).toEqual([
+            {
+                level: "debug",
+                event: "inner_cmd.env_non_transparent",
+                details: { command: "env FOO=bar pnpm test" },
+            },
+        ]);
+    });
+
+    it("does not claim a command that only contains env later", async () => {
+        // Starts with printf, not env -> no handler claims it -> silent defer.
+        const { verdict, log } = await run({
+            recoveredCommand: "printf hi; env | sort",
+            states: {},
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(log).toEqual([]);
+    });
+});
+
 describe("authorizeInnerCommand — exceptions defer with a debug log", () => {
     it("defers when reading the session id throws (logs only safe data)", async () => {
         const { verdict, log } = await run({

@@ -1,53 +1,28 @@
-# Permission Authorization
+# pi-extensions
 
-This context describes how ambiguous coding-agent operations are reviewed before they may execute.
+Personal `pi` coding-agent extensions. This context covers the permission
+extensions that inspect and re-evaluate Bash commands before they are allowed.
 
 ## Language
 
-**Deterministic Permission Policy**:
-The rule-based authority that classifies an operation as allowed, denied, or requiring a decision.
-_Avoid_: Static judge
+### Wrappers
 
-**Authorization Judge**:
-An independent reviewer that proposes a verdict for an operation the Deterministic Permission Policy could not decide.
-_Avoid_: Bash parser, safety classifier
+**Wrapper**:
+A Bash command of the form `<program> [modifier-args] <inner-command>`, where the
+authorization question is "what does the inner command do?". Whether a wrapper
+may be unwrapped depends on whether its modifier args are transparent.
+_Avoid_: command type, prefix command
 
-**Shadow Mode**:
-An observation mode in which an Authorization Judge records a verdict without changing whether the operation executes.
-_Avoid_: Dry run
+**Transparent wrapper**:
+A wrapper whose modifier args do not change which program the inner command
+resolves to or its trust boundary (e.g. `timeout`). Stripping the modifiers and
+re-evaluating the inner command is sound: the verdict applies to the same
+program that actually runs.
+_Avoid_: safe wrapper
 
-**Enforce Mode**:
-An authority mode in which an Authorization Judge's allow verdict may approve an operation. In the initial rollout, deny and defer still pass to the next authority.
-_Avoid_: Production mode
-
-**Judge Participation**:
-The presence of an Authorization Judge in the configured authorizer chain. Participation determines whether the Judge is consulted, independently of whether it is in Shadow Mode or Enforce Mode.
-_Avoid_: Enabled, installed
-
-**Defer**:
-A verdict stating that the available information or the judge itself is insufficient to decide, leaving the decision to the next authority.
-_Avoid_: Deny, error
-
-**False Allow**:
-A Shadow Mode outcome in which the Authorization Judge proposes approval and the human reviewer rejects the same permission request.
-_Avoid_: False positive
-
-**Requesting Session**:
-The session in which the operation requiring authorization originated. For a forwarded request, this is the child session.
-_Avoid_: Current session
-
-**Serving Session**:
-The authority-bearing session that resolves a forwarded request and runs its configured Authorization Judge before the terminal human authority.
-_Avoid_: Parent context, current session
-
-**Conversation Owner**:
-The session whose conversation entries are supplied to an Authorization Judge. It may differ from the Requesting Session for forwarded requests.
-_Avoid_: Requester
-
-**Judgment Evidence**:
-The minimal operation, execution, user-intent, and forwarded-provenance facts supplied to an Authorization Judge for one verdict. Adapter validation state and review-log metadata are not Judgment Evidence.
-_Avoid_: Judge request, full request context
-
-**Execution Working Directory**:
-The working directory of the Requesting Session in which an operation will execute and relative paths are resolved. For a forwarded request, it must not be replaced with the Serving Session's working directory.
-_Avoid_: Current cwd, parent cwd
+**Non-transparent wrapper**:
+A wrapper whose modifier args change the inner command's resolution or effect
+(e.g. `env`, whose `PATH=` or `-i` can make the inner name resolve to a
+different binary). Stripping the modifiers and re-evaluating the inner command
+is unsound: the verdict may apply to a different program than the one that runs.
+_Avoid_: unsafe wrapper

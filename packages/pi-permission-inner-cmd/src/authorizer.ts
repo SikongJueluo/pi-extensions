@@ -5,14 +5,11 @@ import type {
     PermissionQuery,
     PromptPermissionDetails,
 } from "@gotgenes/pi-permission-system";
-import { classifyWrapper, isRecognizedWrapper } from "./recognizer";
 import {
     NATIVE_BASH_TOOL_NAME,
     recoverNativeBashCommand,
 } from "@sikongjueluo/pi-permission-shared";
-
-/** Bash permission surface queried when re-evaluating the inner command. */
-const BASH_SURFACE = "bash";
+import { handlers } from "./handlers";
 
 /** Convert a thrown value into a short, log-safe string. */
 function toErrorString(error: unknown): string {
@@ -49,24 +46,22 @@ export interface InnerCommandAuthorizerDeps {
 }
 
 /**
- * V0.1 inner-command Authorizer decision (ADR 0001).
+ * Inner-command Authorizer decision (ADR 0001).
  *
- * Recovers the complete native Bash command for `details.toolCallId` from the
- * captured session, unwraps one strict `timeout` level, and re-evaluates the
- * inner command through the deterministic permission policy. Every uncertain
- * path — forwarded requests, a session-identity mismatch, non-Bash tools,
- * missing/duplicate/malformed session evidence, unsupported or nested wrapper
- * syntax, parse failures, and exceptions — defers to the next authority.
+ * Revalidates root ownership, recovers the complete native Bash command for
+ * `details.toolCallId` from the captured session, then hands it to the first
+ * registered handler that claims it. Each handler owns its own recognition and
+ * verdict logic: the timeout handler unwraps one level and re-evaluates the
+ * inner command; the env handler defers as non-transparent.
  *
- * Logging contract:
- * - `review` only for a recognized wrapper whose inner command resolves to a
- *   decisive `allow`/`deny`.
- * - `debug` for a recognized inner `ask`, unsupported timeout syntax, nested
- *   wrappers, a session-identity mismatch, and exceptions.
- * - ordinary non-timeout commands defer silently.
- * - recognized logs carry both `command` and `innerCommand`; an exception after
- *   recognition retains both alongside `error`, while an earlier exception logs
- *   only the safe data available at that point.
+ * Every uncertain path — forwarded requests, a session-identity mismatch,
+ * non-Bash tools, missing session evidence, an unrecognized command, or any
+ * exception — defers to the next authority (fail-closed).
+ *
+ * Logging: handlers emit their own review/debug events for decisive and
+ * notable-defer outcomes; silent deferrals log nothing. Exceptions are logged
+ * by this engine as `inner_cmd.exception`, retaining the recovered command and
+ * any partial evidence the active handler recorded before throwing.
  */
 export async function authorizeInnerCommand(
     deps: InnerCommandAuthorizerDeps,
@@ -75,18 +70,17 @@ export async function authorizeInnerCommand(
 
     // Track recovered evidence so an exception after recognition can retain it.
     let command: string | undefined;
-    let innerCommand: string | undefined;
+    let evidence: Record<string, unknown> = {};
 
     try {
-        // Forwarded subagent asks are out of scope for v0.1: the captured
-        // session is the serving root's conversation, not the requester's.
+        // Forwarded subagent asks are out of scope: the captured session is the
+        // serving root's conversation, not the requester's.
         if (details.forwarding) {
             return { kind: "defer" };
         }
 
         // Revalidate root ownership: the live session must still be the one we
-        // registered for. A mismatch (or a session id that cannot be read)
-        // means the captured conversation can no longer be attributed safely.
+        // registered for.
         const currentSessionId = session.getSessionId();
         if (currentSessionId !== expectedSessionId) {
             log.debug("inner_cmd.session_mismatch", {
@@ -113,59 +107,15 @@ export async function authorizeInnerCommand(
             return { kind: "defer" };
         }
 
-        const classification = classifyWrapper(command);
-
-        switch (classification.kind) {
-            case "nonTimeout":
-                // An ordinary Bash command this authorizer does not unwrap.
-                return { kind: "defer" };
-
-            case "unsupportedTimeout":
-                log.debug("inner_cmd.unsupported_timeout_syntax", { command });
-                return { kind: "defer" };
-
-            case "recognized": {
-                innerCommand = classification.match.innerCommand;
-
-                // Never unwrap more than one level in v0.1.
-                if (isRecognizedWrapper(innerCommand)) {
-                    log.debug("inner_cmd.nested_timeout", {
-                        command,
-                        innerCommand,
-                    });
-                    return { kind: "defer" };
-                }
-
-                const result = query.checkPermission(
-                    BASH_SURFACE,
-                    innerCommand,
-                    details.agentName ?? undefined,
-                );
-
-                switch (result.state) {
-                    case "allow":
-                        log.review("inner_cmd.allow", {
-                            command,
-                            innerCommand,
-                        });
-                        return { kind: "allow" };
-                    case "deny":
-                        log.review("inner_cmd.deny", {
-                            command,
-                            innerCommand,
-                        });
-                        return { kind: "deny" };
-                    case "ask":
-                    default:
-                        // Treat any unexpected state as a safe defer.
-                        log.debug("inner_cmd.inner_ask", {
-                            command,
-                            innerCommand,
-                        });
-                        return { kind: "defer" };
-                }
+        // Dispatch to the first registered handler that claims the command.
+        for (const handler of handlers) {
+            evidence = {};
+            const verdict = handler.decide({ command, details, query, log, evidence });
+            if (verdict !== undefined) {
+                return verdict;
             }
         }
+        return { kind: "defer" };
     } catch (error) {
         const exceptionDetails: Record<string, unknown> = {
             error: toErrorString(error),
@@ -173,9 +123,7 @@ export async function authorizeInnerCommand(
         if (command !== undefined) {
             exceptionDetails.command = command;
         }
-        if (innerCommand !== undefined) {
-            exceptionDetails.innerCommand = innerCommand;
-        }
+        Object.assign(exceptionDetails, evidence);
         log.debug("inner_cmd.exception", exceptionDetails);
         return { kind: "defer" };
     }
