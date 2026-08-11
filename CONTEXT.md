@@ -21,8 +21,10 @@ program that actually runs.
 _Avoid_: safe wrapper
 
 **Non-transparent wrapper**:
-A wrapper whose modifier args change the inner command's resolution or effect
-(e.g. `env`, whose `PATH=` or `-i` can make the inner name resolve to a
-different binary). Stripping the modifiers and re-evaluating the inner command
-is unsound: the verdict may apply to a different program than the one that runs.
+A wrapper whose modifiers change what the inner command actually does in a way
+the command string does not capture — e.g. `env` (its `PATH=` / `LD_PRELOAD`
+make the inner name resolve to or load a different program) or `xargs` (its
+inner command's arguments are read from stdin). Stripping the modifiers and
+re-evaluating the inner command is unsound: the verdict applies to inputs that
+are not knowable from the command string.
 _Avoid_: unsafe wrapper

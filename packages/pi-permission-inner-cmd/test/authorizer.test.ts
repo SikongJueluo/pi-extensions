@@ -432,6 +432,36 @@ describe("authorizeInnerCommand — env wrapper", () => {
     });
 });
 
+describe("authorizeInnerCommand — xargs wrapper", () => {
+    it("defers on a leading xargs with a debug log (non-transparent args)", async () => {
+        const { verdict, log, check } = await run({
+            recoveredCommand: "xargs rm",
+            states: { rm: "allow" },
+        });
+        expect(verdict.kind).toBe("defer");
+        // xargs arguments come from stdin, so the inner command is never
+        // re-evaluated through the deterministic policy.
+        expect(check).toEqual([]);
+        expect(log).toEqual([
+            {
+                level: "debug",
+                event: "inner_cmd.xargs_non_transparent",
+                details: { command: "xargs rm" },
+            },
+        ]);
+    });
+
+    it("does not claim a command where xargs appears mid-pipeline", async () => {
+        // Starts with find, not xargs -> no handler claims it -> silent defer.
+        const { verdict, log } = await run({
+            recoveredCommand: "find . -name '*.tmp' | xargs rm",
+            states: {},
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(log).toEqual([]);
+    });
+});
+
 describe("authorizeInnerCommand — exceptions defer with a debug log", () => {
     it("defers when reading the session id throws (logs only safe data)", async () => {
         const { verdict, log } = await run({
