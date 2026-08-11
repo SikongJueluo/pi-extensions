@@ -37,17 +37,18 @@ function extractBashCommand(block: ToolCallBlock): string | undefined {
  * walked in reverse and the search stops at the first (latest) assistant
  * message that contains a `toolCall` block whose `id` equals `toolCallId`.
  *
- * Per ADR 0001, the id must match exactly one block *within that single
- * message*. An earlier message reusing the same id is a stale, already-resolved
- * call and is irrelevant to the current authorization; but two matching blocks
- * inside one message cannot be disambiguated (we cannot tell which one
- * `details.toolCallId` refers to), so that case stays fail-closed. The matched
- * block must then name the native Bash tool and carry a string
+ * The id must match exactly one block *within that single message*. An earlier
+ * message reusing the same id is a stale, already-resolved call and is
+ * irrelevant to the current authorization; but two matching blocks inside one
+ * message cannot be disambiguated (we cannot tell which one the caller's
+ * `toolCallId` refers to), so that case returns `undefined` (fail-closed). The
+ * matched block must then name the native Bash tool and carry a string
  * `arguments.command`.
  *
  * Any other outcome — no match, a within-message duplicate id, a non-Bash tool
- * call, a non-string command, or malformed entries — returns `undefined` so the
- * caller defers fail-closed.
+ * call, a non-string command, or malformed entries — returns `undefined`.
+ *
+ * See ADR 0001 for the underlying permission/evidence boundaries.
  *
  * @returns the complete Bash command, or `undefined`.
  */

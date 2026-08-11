@@ -6,7 +6,10 @@ import type {
     PromptPermissionDetails,
 } from "@gotgenes/pi-permission-system";
 import { classifyWrapper, isRecognizedWrapper } from "./recognizer";
-import { NATIVE_BASH_TOOL_NAME, recoverNativeBashCommand } from "./recovery";
+import {
+    NATIVE_BASH_TOOL_NAME,
+    recoverNativeBashCommand,
+} from "@sikongjueluo/pi-permission-shared";
 
 /** Bash permission surface queried when re-evaluating the inner command. */
 const BASH_SURFACE = "bash";

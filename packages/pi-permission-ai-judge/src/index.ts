@@ -1,13 +1,25 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+    ExtensionAPI,
+    SessionEntry,
+} from "@earendil-works/pi-coding-agent";
 import {
     getPermissionsService,
     PERMISSIONS_READY_CHANNEL,
 } from "@gotgenes/pi-permission-system";
+import {
+    NATIVE_BASH_TOOL_NAME,
+    recoverNativeBashCommand,
+} from "@sikongjueluo/pi-permission-shared";
 
 const LINK_NAME = "ai-bash-judge";
 
+/** 捕获的 UI-root 会话读取入口，用于还原完整命令。 */
+interface CapturedSession {
+    getEntries(): ReadonlyArray<SessionEntry>;
+}
+
 export default function permissionAiJudge(pi: ExtensionAPI): void {
-    let sessionStarted = false;
+    let session: CapturedSession | undefined;
     let disposeAuthorizer: (() => void) | undefined;
 
     /**
@@ -21,7 +33,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
      * 谁后满足条件，谁完成注册。
      */
     function tryRegister(): void {
-        if (!sessionStarted || disposeAuthorizer) {
+        if (!session || disposeAuthorizer) {
             return;
         }
 
@@ -34,6 +46,9 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
             return;
         }
 
+        // 捕获此刻的会话引用：回调触发时读取最新 entries。
+        const captured = session;
+
         disposeAuthorizer = service.registerAuthorizer(
             LINK_NAME,
 
@@ -43,11 +58,29 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                     details.surface ??
                     undefined;
 
+                /**
+                 * 还原完整的 bash 命令。
+                 *
+                 * details.command 可能只是聚合 ask 里的某个命令单元（见
+                 * ADR 0001），AI 判定需要完整输入。只有原生 bash 工具调用
+                 * 才能从会话里还原；否则回退到 details.command。
+                 */
+                const command =
+                    details.toolName === NATIVE_BASH_TOOL_NAME &&
+                    details.toolCallId !== undefined
+                        ? recoverNativeBashCommand(
+                              captured.getEntries(),
+                              details.toolCallId,
+                          )
+                        : undefined;
+
+                const effectiveCommand = command ?? details.command;
+
                 console.error(`[${LINK_NAME}] permission ask received`, {
                     requestId: details.requestId,
                     surface,
                     toolName: details.toolName,
-                    command: details.command,
+                    command: effectiveCommand ?? null,
                     path: details.path,
                     value: details.value,
                     agentName: details.agentName,
@@ -60,10 +93,10 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                  * 它只是询问 pi-permission-system 的确定性规则：
                  * “如果检查这个 bash command，规则本身会怎么判？”
                  */
-                if (surface === "bash" && details.command) {
+                if (surface === "bash" && effectiveCommand) {
                     const result = query.checkPermission(
                         "bash",
-                        details.command,
+                        effectiveCommand,
                         details.agentName ?? undefined,
                     );
 
@@ -81,7 +114,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                 log.review("ai_bash_judge.test", {
                     requestId: details.requestId,
                     surface,
-                    command: details.command ?? null,
+                    command: effectiveCommand ?? null,
                     verdict: "defer",
                 });
 
@@ -103,8 +136,15 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
         console.error(`[${LINK_NAME}] registered`);
     }
 
-    pi.on("session_start", () => {
-        sessionStarted = true;
+    pi.on("session_start", (_event, ctx) => {
+        // 仅从 proven UI-present root 注册：headless / 进程内 subagent child
+        // 能解析到父进程的 service，但不能用 child 捕获的上下文注册，
+        // 否则还原出的命令会来自错误的会话。
+        if (!ctx.hasUI) {
+            return;
+        }
+
+        session = ctx.sessionManager;
         tryRegister();
     });
 
@@ -116,7 +156,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
         disposeAuthorizer?.();
 
         disposeAuthorizer = undefined;
-        sessionStarted = false;
+        session = undefined;
 
         console.error(`[${LINK_NAME}] unregistered`);
     });

@@ -16,15 +16,22 @@
     "@earendil-works/pi-coding-agent": "*",
     "@gotgenes/pi-permission-system": ">=20.10.0"
   },
+  "dependencies": {
+    "@sikongjueluo/pi-permission-shared": "workspace:*"
+  },
+  "bundledDependencies": [
+    "@sikongjueluo/pi-permission-shared"
+  ],
   "devDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@gotgenes/pi-permission-system": ">=20.10.0",
+    "@types/node": "^26.0.0",
     "typescript": "^5",
     "vitest": "^3"
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --passWithNoTests"
   }
 }
