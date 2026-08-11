@@ -7,6 +7,9 @@
   },
   "type": "module",
   "private": true,
+  "dependencies": {
+    "@gotgenes/pi-permission-system": ">=24.0.0"
+  },
   "pi": {
     "extensions": [
       "./packages/pi-permission-inner-cmd/src/index.ts"
