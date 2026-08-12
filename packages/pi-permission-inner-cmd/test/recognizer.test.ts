@@ -6,7 +6,7 @@ import {
 } from "../src/recognizer";
 
 describe("parseTimeoutWrapper", () => {
-    it("matches the strict simple-timeout form", () => {
+    it("matches the simple-timeout form", () => {
         expect(parseTimeoutWrapper("timeout 30s pnpm test")).toEqual({
             duration: "30s",
             innerCommand: "pnpm test",
@@ -22,6 +22,21 @@ describe("parseTimeoutWrapper", () => {
         expect(parseTimeoutWrapper("timeout 2d longjob")).toEqual({
             duration: "2d",
             innerCommand: "longjob",
+        });
+    });
+
+    it("accepts GNU durations: bare integer (seconds) and decimals", () => {
+        expect(parseTimeoutWrapper("timeout 240 pnpm test")).toEqual({
+            duration: "240",
+            innerCommand: "pnpm test",
+        });
+        expect(parseTimeoutWrapper("timeout 1.5h deploy")).toEqual({
+            duration: "1.5h",
+            innerCommand: "deploy",
+        });
+        expect(parseTimeoutWrapper("timeout 2.5s build")).toEqual({
+            duration: "2.5s",
+            innerCommand: "build",
         });
     });
 
@@ -47,8 +62,10 @@ describe("parseTimeoutWrapper", () => {
         });
     });
 
-    it("rejects leading-zero and multi-letter durations", () => {
+    it("rejects zero, leading-zero, ms, and multi-letter durations", () => {
+        expect(parseTimeoutWrapper("timeout 0 pnpm test")).toBeUndefined();
         expect(parseTimeoutWrapper("timeout 0s pnpm test")).toBeUndefined();
+        expect(parseTimeoutWrapper("timeout 0.5s pnpm test")).toBeUndefined();
         expect(parseTimeoutWrapper("timeout 030s pnpm test")).toBeUndefined();
         expect(parseTimeoutWrapper("timeout 30ms pnpm test")).toBeUndefined();
         expect(parseTimeoutWrapper("timeout 30sec pnpm test")).toBeUndefined();

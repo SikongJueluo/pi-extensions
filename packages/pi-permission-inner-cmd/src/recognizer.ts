@@ -1,23 +1,28 @@
 /**
  * V0.1 wrapper recognizer.
  *
- * The strict simple-timeout grammar from ADR 0001. V0.1 unwraps exactly
+ * The simple-timeout grammar from ADR 0001. V0.1 unwraps exactly
  * `timeout <duration> <command>`; every other `timeout` invocation is left to
  * the next authority.
  */
 
 /**
- * Matches `timeout <duration> <command>` where `<duration>` is a positive
- * integer (no leading zero) followed by a single unit `s`/`m`/`h`/`d`.
+ * Matches `timeout <duration> <command>` where `<duration>` follows GNU
+ * timeout's grammar: a positive number (integer or decimal, no leading zero)
+ * with an optional unit `s`/`m`/`h`/`d` (default seconds). A bare integer such
+ * as `timeout 240 cmd` is therefore accepted (240 seconds).
  *
- * Flags (`-k`, `--preserve-status`, GNU `--`), compound durations, and the
- * bare form are intentionally excluded so v0.1 never unwraps a wrapper it
- * cannot re-evaluate safely.
+ * The duration format is irrelevant to unwrap soundness — the duration is
+ * discarded and only the inner command is re-evaluated — so GNU's full numeric
+ * grammar is accepted. Still excluded: `0`/leading-zero durations, `ms` (not a
+ * timeout unit), multi-letter units, and flags (`-k`, `--preserve-status`, GNU
+ * `--`), so a wrapper that cannot be re-evaluated safely is never unwrapped.
  */
-const TIMEOUT_WRAPPER_PATTERN = /^timeout[ \t]+([1-9][0-9]*[smhd])[ \t]+(.+)$/;
+const TIMEOUT_WRAPPER_PATTERN =
+    /^timeout[ \t]+([1-9][0-9]*(?:\.[0-9]+)?[smhd]?)[ \t]+(.+)$/;
 
 /** A command that begins with the bare `timeout` wrapper program. */
-const TIMEOUT_PREFIX = /^timeout(?:[ \t]|$)/;
+export const TIMEOUT_PREFIX = /^timeout(?:[ \t]|$)/;
 
 export interface TimeoutWrapperMatch {
     readonly duration: string;

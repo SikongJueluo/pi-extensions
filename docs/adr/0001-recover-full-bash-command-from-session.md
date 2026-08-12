@@ -15,16 +15,39 @@ Proceed only when all evidence agrees:
 - the request and recovered tool call both identify the native `bash` tool;
 - the tool-call ID has exactly one match within the latest assistant message that contains it (a cross-message reuse resolves to the latest, which is the call being authorized);
 - `arguments.command` is a string;
-- the complete input matches the strict wrapper grammar;
+- the ask-triggering unit (`details.command`) matches the wrapper grammar;
 - the inner command is not another recognized wrapper.
 
-V0.1 recognizes only:
+V0.1 recognizes:
 
 ```regex
-^timeout[ \t]+([1-9][0-9]*[smhd])[ \t]+(.+)$
+^timeout[ \t]+([1-9][0-9]*(?:\.[0-9]+)?[smhd]?)[ \t]+(.+)$
 ```
 
+The duration follows GNU timeout's grammar: a positive number (integer or
+decimal) with an optional unit `s`/`m`/`h`/`d` (default seconds), so a bare
+integer such as `timeout 240 cmd` is accepted. The duration format is irrelevant
+to unwrap soundness — the duration is discarded and only the inner command is
+re-evaluated — so the full numeric grammar is allowed. `0`/leading-zero, `ms`,
+and flags remain excluded. (Amended from the original unit-required grammar
+after `timeout 240 …` was seen in real usage.)
+
 The complete inner command is re-evaluated through the Deterministic Permission Policy. Map `allow` to `allow`, `deny` to `deny`, and `ask` to `defer`. Missing or ambiguous session evidence, forwarded requests, shell aliases, unsupported `timeout` options, nested wrappers, parse failures, and exceptions all produce `defer`.
+
+**Scaffolded commands (amended).** The recovered full command may be a compound
+that does not start with the wrapper — e.g. a subagent scaffold
+`cd … && timeout … | tail; echo EXIT`. Detection therefore runs on
+`details.command` (the unit the permission system isolated, always
+wrapper-leading). The wrapper is stripped from the *full* command (the unit
+text is replaced by its unwrapped inner, required to occur exactly once) and the
+entire de-wrapped compound is re-evaluated through the Deterministic Permission
+Policy, which decomposes it into units and keeps the most restrictive — so
+sibling commands are still judged and cannot hide behind the wrapper's allow. If
+the unit is not a recognized wrapper, cannot be located exactly once, or the
+re-evaluation is not `allow`, the authorizer defers fail-closed. (The original
+design detected on the full command only, which missed every scaffolded command;
+`details.command` is now used for *detection and locating* only — judgment still
+runs on the full command, preserving the "never trust a truncated unit" rule.)
 
 ## Consequences
 

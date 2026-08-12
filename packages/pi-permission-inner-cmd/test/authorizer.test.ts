@@ -79,6 +79,7 @@ function entriesRecovering(command: string, toolCallId = "call_1"): SessionEntry
 function bashDetails(
     toolCallId = "call_1",
     agentName: string | null = null,
+    command?: string,
 ): PromptPermissionDetails {
     return {
         requestId: "req-1",
@@ -87,8 +88,8 @@ function bashDetails(
         message: "May I run bash?",
         toolCallId,
         toolName: "bash",
-        // details.command is intentionally the winning unit, not the full input.
-        command: "ignored-winning-unit",
+        // details.command is the winning unit the permission system isolated.
+        command,
     };
 }
 
@@ -117,6 +118,8 @@ function makeSessionProbe(args: {
 
 async function run(args: {
     recoveredCommand: string;
+    /** details.command — the ask-triggering unit; defaults to recoveredCommand. */
+    unitCommand?: string;
     states?: Record<string, PermissionState>;
     details?: Partial<PromptPermissionDetails>;
     getEntriesThrows?: boolean;
@@ -141,8 +144,12 @@ async function run(args: {
         getSessionIdThrows: args.getSessionIdThrows,
         sessionId: args.sessionMismatch ? "session-changed" : ROOT_SESSION_ID,
     });
+    const unitCommand = args.unitCommand ?? args.recoveredCommand;
     const verdict = await authorizeInnerCommand({
-        details: { ...bashDetails(toolCallId), ...args.details } as PromptPermissionDetails,
+        details: {
+            ...bashDetails(toolCallId, null, unitCommand),
+            ...args.details,
+        } as PromptPermissionDetails,
         query,
         log,
         session,
@@ -459,6 +466,66 @@ describe("authorizeInnerCommand — xargs wrapper", () => {
         });
         expect(verdict.kind).toBe("defer");
         expect(log).toEqual([]);
+    });
+});
+
+describe("authorizeInnerCommand — scaffolded commands", () => {
+    it("unwraps a timeout buried in a cd/echo/|/tail scaffold", async () => {
+        const full =
+            "cd /repo && echo go && timeout 240 pnpm install --frozen-lockfile 2>&1 | tail -30; echo EXIT";
+        const deWrapped =
+            "cd /repo && echo go && pnpm install --frozen-lockfile 2>&1 | tail -30; echo EXIT";
+        const { verdict, log, check } = await run({
+            recoveredCommand: full,
+            unitCommand: "timeout 240 pnpm install --frozen-lockfile",
+            states: { [deWrapped]: "allow" },
+        });
+        expect(verdict.kind).toBe("allow");
+        // re-evaluated the full de-wrapped compound, not just the unit's inner
+        expect(check).toEqual([
+            { surface: "bash", value: deWrapped, agentName: undefined },
+        ]);
+        expect(log).toEqual([
+            {
+                level: "review",
+                event: "inner_cmd.allow",
+                details: {
+                    command: full,
+                    innerCommand: "pnpm install --frozen-lockfile",
+                },
+            },
+        ]);
+    });
+
+    it("defers when the de-wrapped compound is not fully allowing (sibling)", async () => {
+        const full = "cd /repo && timeout 30s pnpm test && git push origin";
+        const deWrapped = "cd /repo && pnpm test && git push origin";
+        const { verdict, check } = await run({
+            recoveredCommand: full,
+            unitCommand: "timeout 30s pnpm test",
+            states: {},
+        });
+        expect(verdict.kind).toBe("defer");
+        // the de-wrapped compound still contains the git push sibling
+        expect(check).toEqual([
+            { surface: "bash", value: deWrapped, agentName: undefined },
+        ]);
+    });
+
+    it("defers fail-closed when the unit is not a unique substring", async () => {
+        const { verdict, log } = await run({
+            recoveredCommand: "timeout   30s pnpm test",
+            unitCommand: "timeout 30s pnpm test",
+            states: { "pnpm test": "allow" },
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(log).toEqual([
+            {
+                level: "debug",
+                event: "inner_cmd.wrapper_not_located",
+                details: { command: "timeout   30s pnpm test" },
+            },
+        ]);
     });
 });
 
