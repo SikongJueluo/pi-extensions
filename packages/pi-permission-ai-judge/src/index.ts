@@ -102,7 +102,11 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                         provider: result.metadata.provider,
                         model: result.metadata.model,
                         api: result.metadata.api,
-                        outputTokens: result.outputTokens,
+                        // Log key deliberately avoids the substring "token":
+                        // permission-system masks any key matching /token/i
+                        // (structural key-name redaction), which would erase
+                        // this usage telemetry from the review log.
+                        outputUsage: result.outputTokens,
                         reasonLength: reasonLength(result.reason),
                     });
                 } else {
@@ -119,6 +123,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                         provider: result.metadata?.provider ?? null,
                         model: result.metadata?.model ?? null,
                         api: result.metadata?.api ?? null,
+                        outputUsage: result.outputTokens ?? null,
                     });
                 }
 

@@ -8,7 +8,12 @@ import { buildJudgeContext, MAX_REASON_CODE_POINTS, REPORT_VERDICT_TOOL_NAME } f
 import type { BashJudgmentEvidence } from "./evidence";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
-const MAX_OUTPUT_TOKENS = 256;
+// Reasoning-token aware cap. Providers that bill chain-of-thought inside
+// completion tokens (observed on zai glm-5.2 despite `thinking: disabled`:
+// 669 reasoning + 70 output for one verdict) exhausted a 256-token budget
+// before emitting the forced tool call. 4096 leaves headroom over the
+// observed ~740 while the no-retry timeout still bounds worst-case cost.
+const MAX_OUTPUT_TOKENS = 4_096;
 
 export type InfrastructureCode =
     | "no_model"
@@ -57,6 +62,8 @@ export type ModelAttempt =
           readonly code: InfrastructureCode;
           readonly metadata?: ModelMetadata;
           readonly modelCalled: boolean;
+          /** Completion-token usage when a response arrived, else null. */
+          readonly outputTokens?: number | null;
       };
 
 function forcedToolChoice(api: string): unknown | undefined {
@@ -155,11 +162,13 @@ export async function requestStructuredVerdict(
     }
 
     let modelCalled = false;
+    let observedOutputTokens: number | null = null;
     const failure = (code: InfrastructureCode): ModelAttempt => ({
         kind: "infrastructure_failure",
         code,
         metadata: availability.metadata,
         modelCalled,
+        outputTokens: observedOutputTokens,
     });
     const timeoutController = new AbortController();
     const requestController = new AbortController();
@@ -193,6 +202,9 @@ export async function requestStructuredVerdict(
         }
 
         const outputTokens = response.usage.output;
+        if (Number.isFinite(outputTokens)) {
+            observedOutputTokens = outputTokens;
+        }
         if (
             !Number.isFinite(outputTokens) ||
             outputTokens <= 0 ||

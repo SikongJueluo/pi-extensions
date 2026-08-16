@@ -118,6 +118,40 @@ describe("requestStructuredVerdict", () => {
         });
     });
 
+    it("accepts reasoning-heavy responses within the raised budget", async () => {
+        // Observed live on zai glm-5.2: 669 reasoning + 70 output tokens still
+        // delivered exactly one valid report_verdict call.
+        const complete = vi.fn(
+            async (_context: Context, _signal: AbortSignal) =>
+                response(
+                    [
+                        {
+                            type: "toolCall",
+                            id: "call-1",
+                            name: "report_verdict",
+                            arguments: {
+                                verdict: "allow",
+                                reason: "Bounded command with evident intent.",
+                            },
+                        },
+                    ],
+                    739,
+                ),
+        );
+
+        const result = await requestStructuredVerdict(
+            ready(complete),
+            evidence,
+            new AbortController().signal,
+        );
+
+        expect(result).toMatchObject({
+            kind: "judgment",
+            verdict: "allow",
+            outputTokens: 739,
+        });
+    });
+
     it("rejects invalid arguments, verdicts, reasons, and output usage", async () => {
         const extraArguments = await requestStructuredVerdict(
             ready(async () =>
@@ -182,13 +216,16 @@ describe("requestStructuredVerdict", () => {
                             arguments: { verdict: "allow", reason: "bounded" },
                         },
                     ],
-                    257,
+                    4_097,
                 ),
             ),
             evidence,
             new AbortController().signal,
         );
-        expect(excessiveUsage).toMatchObject({ code: "model_error" });
+        expect(excessiveUsage).toMatchObject({
+            code: "model_error",
+            outputTokens: 4_097,
+        });
     });
 
     it("maps the bounded deadline to timeout", async () => {
