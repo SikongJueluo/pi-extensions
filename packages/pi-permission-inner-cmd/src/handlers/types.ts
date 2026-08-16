@@ -5,10 +5,12 @@ import type {
     PromptPermissionDetails,
 } from "@gotgenes/pi-permission-system";
 
-/** Context handed to a handler for one recovered command. */
+/** Context handed to a handler for one structured Bash ask. */
 export interface HandlerContext {
-    /** The full recovered Bash command. */
+    /** The complete Bash tool input from the permission payload. */
     readonly command: string;
+    /** The command unit whose deterministic rule produced the ask. */
+    readonly unit: string;
     readonly details: PromptPermissionDetails;
     readonly query: PermissionQuery;
     readonly log: AuthorizerLog;

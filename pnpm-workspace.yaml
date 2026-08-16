@@ -5,3 +5,5 @@ allowBuilds:
   esbuild: true
   protobufjs: false
   tree-sitter-bash: true
+minimumReleaseAgeExclude:
+  - '@gotgenes/pi-permission-system@25.3.0'

@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type {
     AuthorizerLog,
     PermissionCheckResult,
@@ -58,56 +57,58 @@ function makeQuery(
     return { query, calls };
 }
 
-function assistantEntry(content: unknown[]): SessionEntry {
-    return {
-        type: "message",
-        id: "entry-1",
-        parentId: null,
-        timestamp: "2026-08-08T00:00:00.000Z",
-        message: { role: "assistant", content },
-    } as unknown as SessionEntry;
-}
-
-function bashToolCall(id: string, command: unknown): Record<string, unknown> {
-    return { type: "toolCall", id, name: "bash", arguments: { command } };
-}
-
-function entriesRecovering(command: string, toolCallId = "call_1"): SessionEntry[] {
-    return [assistantEntry([bashToolCall(toolCallId, command)])];
-}
-
 function bashDetails(
     toolCallId = "call_1",
     agentName: string | null = null,
-    command?: string,
+    command = "",
+    fullCommand = command,
 ): PromptPermissionDetails {
     return {
         requestId: "req-1",
         source: "tool_call",
         agentName,
         message: "May I run bash?",
+        payload: {
+            kind: "bash",
+            request: {
+                requester: {
+                    agentName,
+                    forwarded: false,
+                    sessionId: null,
+                },
+                surface: "bash",
+                toolName: "bash",
+                invokedToolName: null,
+                value: command,
+                matchedPattern: null,
+                commandContext: null,
+                executedUnit: null,
+            },
+            evidence:
+                fullCommand === command
+                    ? []
+                    : [
+                          {
+                              label: "full command",
+                              text: fullCommand,
+                              detail: null,
+                          },
+                      ],
+            annotations: [],
+        },
         toolCallId,
         toolName: "bash",
-        // details.command is the winning unit the permission system isolated.
+        // Legacy projection; the structured payload is authoritative.
         command,
     };
 }
 
 function makeSessionProbe(args: {
-    recoveredCommand: string;
-    toolCallId: string;
-    getEntriesThrows?: boolean;
     /** Live session id reported at authorize time. */
     sessionId?: string;
     getSessionIdThrows?: boolean;
-}): SessionProbe {
+} = {}): SessionProbe {
     return {
-        getEntries: args.getEntriesThrows
-            ? (): SessionEntry[] => {
-                throw new Error("session boom");
-            }
-            : (): SessionEntry[] =>
-                entriesRecovering(args.recoveredCommand, args.toolCallId),
         getSessionId: args.getSessionIdThrows
             ? (): string => {
                 throw new Error("session id boom");
@@ -122,7 +123,6 @@ async function run(args: {
     unitCommand?: string;
     states?: Record<string, PermissionState>;
     details?: Partial<PromptPermissionDetails>;
-    getEntriesThrows?: boolean;
     queryThrowsOn?: string;
     /** Live session id diverges from the captured provenance. */
     sessionMismatch?: boolean;
@@ -138,16 +138,18 @@ async function run(args: {
         throwOn: args.queryThrowsOn,
     });
     const session = makeSessionProbe({
-        recoveredCommand: args.recoveredCommand,
-        toolCallId,
-        getEntriesThrows: args.getEntriesThrows,
         getSessionIdThrows: args.getSessionIdThrows,
         sessionId: args.sessionMismatch ? "session-changed" : ROOT_SESSION_ID,
     });
     const unitCommand = args.unitCommand ?? args.recoveredCommand;
     const verdict = await authorizeInnerCommand({
         details: {
-            ...bashDetails(toolCallId, null, unitCommand),
+            ...bashDetails(
+                toolCallId,
+                null,
+                unitCommand,
+                args.recoveredCommand,
+            ),
             ...args.details,
         } as PromptPermissionDetails,
         query,
@@ -379,32 +381,87 @@ describe("authorizeInnerCommand — fail-closed deferrals", () => {
         expect(log).toEqual([]);
     });
 
-    it("defers silently when toolCallId is absent", async () => {
-        const { verdict, log } = await run({
+    it("uses the structured payload when toolCallId is absent", async () => {
+        const { verdict } = await run({
             recoveredCommand: "timeout 30s pnpm test",
             states: { "pnpm test": "allow" },
             details: { toolCallId: undefined },
         });
-        expect(verdict.kind).toBe("defer");
-        expect(log).toEqual([]);
+        expect(verdict.kind).toBe("allow");
     });
 
-    it("defers silently when the tool call is not in the session", async () => {
-        // Recover a command under a different id so recovery misses.
-        const { log, calls } = makeLog();
-        const { query, calls: check } = makeQuery({ "pnpm test": "allow" });
-        const verdict = await authorizeInnerCommand({
-            details: bashDetails("call_missing"),
-            query,
-            log,
-            session: makeSessionProbe({
-                recoveredCommand: "timeout 30s pnpm test",
-                toolCallId: "call_1",
-            }),
-            expectedSessionId: ROOT_SESSION_ID,
+    it("defers silently on duplicate full-command evidence", async () => {
+        const details = bashDetails(
+            "call_1",
+            null,
+            "timeout 30s pnpm test",
+            "cd /repo && timeout 30s pnpm test",
+        );
+        const duplicate = details.payload.evidence[0]!;
+        const { verdict, log, check } = await run({
+            recoveredCommand: "cd /repo && timeout 30s pnpm test",
+            unitCommand: "timeout 30s pnpm test",
+            states: { "cd /repo && pnpm test": "allow" },
+            details: {
+                payload: {
+                    ...details.payload,
+                    evidence: [duplicate, duplicate],
+                },
+            },
         });
         expect(verdict.kind).toBe("defer");
-        expect(calls).toEqual([]);
+        expect(log).toEqual([]);
+        expect(check).toEqual([]);
+    });
+
+    it("defers silently on malformed full-command evidence", async () => {
+        const details = bashDetails(
+            "call_1",
+            null,
+            "timeout 30s pnpm test",
+            "cd /repo && timeout 30s pnpm test",
+        );
+        const { verdict, check } = await run({
+            recoveredCommand: "cd /repo && timeout 30s pnpm test",
+            unitCommand: "timeout 30s pnpm test",
+            states: { "cd /repo && pnpm test": "allow" },
+            details: {
+                payload: {
+                    ...details.payload,
+                    evidence: [
+                        {
+                            label: "full command",
+                            text: null as unknown as string,
+                            detail: null,
+                        },
+                    ],
+                },
+            },
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(check).toEqual([]);
+    });
+
+    it("defers silently for a shell alias that re-exposes Bash", async () => {
+        const details = bashDetails(
+            "call_1",
+            null,
+            "timeout 30s pnpm test",
+        );
+        const { verdict, check } = await run({
+            recoveredCommand: "timeout 30s pnpm test",
+            states: { "pnpm test": "allow" },
+            details: {
+                payload: {
+                    ...details.payload,
+                    request: {
+                        ...details.payload.request,
+                        invokedToolName: "exec_command",
+                    },
+                },
+            },
+        });
+        expect(verdict.kind).toBe("defer");
         expect(check).toEqual([]);
     });
 });
@@ -543,18 +600,29 @@ describe("authorizeInnerCommand — exceptions defer with a debug log", () => {
         expect(log[0]?.details).toEqual({ error: "session id boom" });
     });
 
-    it("defers when reading the session throws (logs only safe data)", async () => {
+    it("defers when reading payload evidence throws (logs only safe data)", async () => {
+        const base = bashDetails(
+            "call_1",
+            null,
+            "timeout 30s pnpm test",
+        );
+        const payload = { ...base.payload };
+        Object.defineProperty(payload, "evidence", {
+            get(): never {
+                throw new Error("payload boom");
+            },
+        });
+
         const { verdict, log } = await run({
             recoveredCommand: "timeout 30s pnpm test",
             states: { "pnpm test": "allow" },
-            getEntriesThrows: true,
+            details: { payload },
         });
         expect(verdict.kind).toBe("defer");
         expect(log).toHaveLength(1);
         expect(log[0]?.level).toBe("debug");
         expect(log[0]?.event).toBe("inner_cmd.exception");
-        // Exception before recognition: only the error is available.
-        expect(log[0]?.details).toEqual({ error: "session boom" });
+        expect(log[0]?.details).toEqual({ error: "payload boom" });
     });
 
     it("retains command and innerCommand when the query throws after recognition", async () => {

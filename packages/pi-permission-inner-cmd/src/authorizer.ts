@@ -1,14 +1,9 @@
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type {
     AuthorizerLog,
     AuthorizerVerdict,
     PermissionQuery,
     PromptPermissionDetails,
 } from "@gotgenes/pi-permission-system";
-import {
-    NATIVE_BASH_TOOL_NAME,
-    recoverNativeBashCommand,
-} from "@sikongjueluo/pi-permission-shared";
 import { handlers } from "./handlers";
 
 /** Convert a thrown value into a short, log-safe string. */
@@ -26,8 +21,58 @@ function toErrorString(error: unknown): string {
  * stub so the decision logic stays pure and deterministic.
  */
 export interface SessionProbe {
-    getEntries(): ReadonlyArray<SessionEntry>;
     getSessionId(): string;
+}
+
+const NATIVE_BASH_TOOL_NAME = "bash";
+const FULL_COMMAND_LABEL = "full command";
+
+interface BashCommandEvidence {
+    readonly fullCommand: string;
+    readonly triggeringUnit: string;
+}
+
+function isNonBlank(value: unknown): value is string {
+    return typeof value === "string" && value.trim().length > 0;
+}
+
+/** Read a complete direct native-Bash ask from the structured prompt payload. */
+export function extractBashCommandEvidence(
+    details: PromptPermissionDetails,
+): BashCommandEvidence | undefined {
+    const payload = details.payload;
+    const request = payload?.request;
+
+    if (
+        request === undefined ||
+        !Array.isArray(payload.evidence) ||
+        details.forwarding !== undefined ||
+        payload.kind !== "bash" ||
+        request.requester?.forwarded !== false ||
+        details.toolName !== NATIVE_BASH_TOOL_NAME ||
+        request.toolName !== NATIVE_BASH_TOOL_NAME ||
+        request.invokedToolName !== null ||
+        request.surface !== NATIVE_BASH_TOOL_NAME ||
+        !isNonBlank(request.value) ||
+        (details.command !== undefined && details.command !== request.value)
+    ) {
+        return undefined;
+    }
+
+    const fullCommands = payload.evidence.filter(
+        (entry) => entry.label === FULL_COMMAND_LABEL,
+    );
+    if (fullCommands.length > 1) {
+        return undefined;
+    }
+
+    const fullCommand =
+        fullCommands.length === 0 ? request.value : fullCommands[0]?.text;
+    if (!isNonBlank(fullCommand)) {
+        return undefined;
+    }
+
+    return { fullCommand, triggeringUnit: request.value };
 }
 
 /** Dependencies injected into the pure authorizer decision. */
@@ -46,21 +91,21 @@ export interface InnerCommandAuthorizerDeps {
 }
 
 /**
- * Inner-command Authorizer decision (ADR 0001).
+ * Inner-command Authorizer decision (ADRs 0001 and 0004).
  *
- * Revalidates root ownership, recovers the complete native Bash command for
- * `details.toolCallId` from the captured session, then hands it to the first
- * registered handler that claims it. Each handler owns its own recognition and
- * verdict logic: the timeout handler unwraps one level and re-evaluates the
- * inner command; the env handler defers as non-transparent.
+ * Revalidates root ownership, reads the complete native Bash command from the
+ * structured prompt payload, then hands it to the first registered handler that
+ * claims it. Each handler owns its own recognition and verdict logic: the
+ * timeout handler unwraps one level and re-evaluates the inner command; the env
+ * handler defers as non-transparent.
  *
  * Every uncertain path — forwarded requests, a session-identity mismatch,
- * non-Bash tools, missing session evidence, an unrecognized command, or any
+ * non-Bash tools, malformed payload evidence, an unrecognized command, or any
  * exception — defers to the next authority (fail-closed).
  *
  * Logging: handlers emit their own review/debug events for decisive and
  * notable-defer outcomes; silent deferrals log nothing. Exceptions are logged
- * by this engine as `inner_cmd.exception`, retaining the recovered command and
+ * by this engine as `inner_cmd.exception`, retaining the structured command and
  * any partial evidence the active handler recorded before throwing.
  */
 export async function authorizeInnerCommand(
@@ -68,7 +113,7 @@ export async function authorizeInnerCommand(
 ): Promise<AuthorizerVerdict> {
     const { details, query, log, session, expectedSessionId } = deps;
 
-    // Track recovered evidence so an exception after recognition can retain it.
+    // Track structured evidence so an exception after recognition can retain it.
     let command: string | undefined;
     let evidence: Record<string, unknown> = {};
 
@@ -90,27 +135,26 @@ export async function authorizeInnerCommand(
             return { kind: "defer" };
         }
 
-        // Only the native Bash tool is unwrappable, and only when the ask is
-        // tied to a specific tool call.
-        if (details.toolName !== NATIVE_BASH_TOOL_NAME) {
+        // The payload is complete by contract. A "full command" evidence entry
+        // exists only when it differs from request.value; otherwise that value
+        // is the complete command. Ambiguous or inconsistent payloads defer.
+        const commandEvidence = extractBashCommandEvidence(details);
+        if (commandEvidence === undefined) {
             return { kind: "defer" };
         }
-        const toolCallId = details.toolCallId;
-        if (toolCallId === undefined) {
-            return { kind: "defer" };
-        }
-
-        // Recover the complete Bash input from the session, never from
-        // details.command or details.message.
-        command = recoverNativeBashCommand(session.getEntries(), toolCallId);
-        if (command === undefined) {
-            return { kind: "defer" };
-        }
+        command = commandEvidence.fullCommand;
 
         // Dispatch to the first registered handler that claims the command.
         for (const handler of handlers) {
             evidence = {};
-            const verdict = handler.decide({ command, details, query, log, evidence });
+            const verdict = handler.decide({
+                command,
+                unit: commandEvidence.triggeringUnit,
+                details,
+                query,
+                log,
+                evidence,
+            });
             if (verdict !== undefined) {
                 return verdict;
             }

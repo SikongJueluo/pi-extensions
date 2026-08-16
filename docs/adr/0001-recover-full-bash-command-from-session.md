@@ -4,6 +4,10 @@ status: accepted
 
 # Recover the full Bash command from the Pi session
 
+> **Mechanism superseded by ADR 0004.** Permission-system 25.3 now exposes the
+> complete local Bash input through `PromptPermissionDetails.payload`; the
+> wrapper and complete-compound safety rules recorded here remain in force.
+
 `pi-permission-inner-cmd` needs the complete Bash input before it may allow a transparent wrapper. `@gotgenes/pi-permission-system` exposes only the winning command unit as `details.command`; for `timeout 60s pnpm test && git push`, that may be `timeout 60s pnpm test`. An Authorizer `allow` approves the whole tool call, so unwrapping that unit alone could hide a sibling command.
 
 ## Decision

@@ -1,5 +1,12 @@
 # Research: context ownership for forwarded and subagent Bash asks
 
+> **2026-08-16 update:** This report characterizes permission-system 24.0.0.
+> Version 25.3 added a required structured prompt payload. Local Bash asks now
+> expose the complete input as `full command` evidence when it differs from the
+> triggering unit; forwarded 25.3/25.4 asks still carry only legacy request prose.
+> See ADR 0004 for the current command-input contract. The root/child ownership
+> findings below remain applicable.
+
 ## Scope
 
 This report describes the installed runtime inspected on 2026-08-08:

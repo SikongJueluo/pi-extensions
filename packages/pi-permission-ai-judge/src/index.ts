@@ -1,163 +1,166 @@
-import type {
-    ExtensionAPI,
-    SessionEntry,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
     getPermissionsService,
     PERMISSIONS_READY_CHANNEL,
 } from "@gotgenes/pi-permission-system";
+import { buildBashJudgmentEvidence } from "./evidence";
 import {
-    NATIVE_BASH_TOOL_NAME,
-    recoverNativeBashCommand,
-} from "@sikongjueluo/pi-permission-shared";
+    createModelAvailability,
+    requestStructuredVerdict,
+    type ModelAvailability,
+} from "./model";
 
 const LINK_NAME = "ai-bash-judge";
+const REVIEW_SCHEMA_VERSION = 1;
 
-/** 捕获的 UI-root 会话读取入口，用于还原完整命令。 */
-interface CapturedSession {
-    getEntries(): ReadonlyArray<SessionEntry>;
+interface RootSession {
+    readonly getSessionId: () => string;
+    readonly expectedSessionId: string;
+    readonly model: ModelAvailability;
+    readonly shutdown: AbortController;
 }
 
+function reasonLength(reason: string): number {
+    return [...reason].length;
+}
+
+/** Register a Shadow-only structured-output judge for local native Bash asks. */
 export default function permissionAiJudge(pi: ExtensionAPI): void {
-    let session: CapturedSession | undefined;
+    let root: RootSession | undefined;
     let disposeAuthorizer: (() => void) | undefined;
 
-    /**
-     * 尝试向 pi-permission-system 注册我们的 Authorizer。
-     *
-     * 之所以不能只在 session_start 里注册，是因为：
-     * - 可能我们的 extension 先启动；
-     * - 也可能 pi-permission-system 先启动。
-     *
-     * 所以同时监听 session_start 和 permissions:ready，
-     * 谁后满足条件，谁完成注册。
-     */
     function tryRegister(): void {
-        if (!session || disposeAuthorizer) {
+        if (disposeAuthorizer !== undefined || root === undefined) {
             return;
         }
 
         const service = getPermissionsService();
-
-        if (!service) {
-            console.debug(
-                `[${LINK_NAME}] permission service not ready; waiting`,
-            );
+        if (service === undefined) {
             return;
         }
 
-        // 捕获此刻的会话引用：回调触发时读取最新 entries。
-        const captured = session;
-
+        const captured = root;
         disposeAuthorizer = service.registerAuthorizer(
             LINK_NAME,
-
-            async (details, query, log) => {
-                const surface =
-                    details.accessIntent?.surface ??
-                    details.surface ??
-                    undefined;
-
-                /**
-                 * 还原完整的 bash 命令。
-                 *
-                 * details.command 可能只是聚合 ask 里的某个命令单元（见
-                 * ADR 0001），AI 判定需要完整输入。只有原生 bash 工具调用
-                 * 才能从会话里还原；否则回退到 details.command。
-                 */
-                const command =
-                    details.toolName === NATIVE_BASH_TOOL_NAME &&
-                    details.toolCallId !== undefined
-                        ? recoverNativeBashCommand(
-                              captured.getEntries(),
-                              details.toolCallId,
-                          )
-                        : undefined;
-
-                const effectiveCommand = command ?? details.command;
-
-                console.error(`[${LINK_NAME}] permission ask received`, {
-                    requestId: details.requestId,
-                    surface,
-                    toolName: details.toolName,
-                    command: effectiveCommand ?? null,
-                    path: details.path,
-                    value: details.value,
-                    agentName: details.agentName,
-                });
-
-                /**
-                 * 测试 PermissionQuery。
-                 *
-                 * 这不会再次触发 Authorizer。
-                 * 它只是询问 pi-permission-system 的确定性规则：
-                 * “如果检查这个 bash command，规则本身会怎么判？”
-                 */
-                if (surface === "bash" && effectiveCommand) {
-                    const result = query.checkPermission(
-                        "bash",
-                        effectiveCommand,
-                        details.agentName ?? undefined,
-                    );
-
-                    console.error(
-                        `[${LINK_NAME}] deterministic policy says`,
-                        result,
-                    );
+            async (details, _query, log) => {
+                try {
+                    // Forwarded asks do not carry a structured child full command in
+                // permission-system 25.3/25.4. Never parse the legacy prose.
+                if (
+                    details.forwarding !== undefined ||
+                    details.payload.kind === "forwarded"
+                ) {
+                    return { kind: "defer" };
                 }
 
-                /**
-                 * 写入 permission-system 自己的 review log。
-                 *
-                 * 以后 AI 的 decision trail 也应该写这里。
-                 */
-                log.review("ai_bash_judge.test", {
-                    requestId: details.requestId,
-                    surface,
-                    command: effectiveCommand ?? null,
-                    verdict: "defer",
-                });
+                if (captured.getSessionId() !== captured.expectedSessionId) {
+                    log.debug("ai_bash_judge.root_session_mismatch");
+                    return { kind: "defer" };
+                }
 
-                /**
-                 * 第一版永远不审批。
-                 *
-                 * defer = 我不知道 / 我不处理，
-                 * 请 Authorizer Chain 继续交给下一个审批者。
-                 *
-                 * 正常情况下最终就是 LocalUserAuthorizer，
-                 * 所以你还是会看到原来的 permission prompt。
-                 */
-                return {
-                    kind: "defer",
-                };
+                // Ignore unrelated permission surfaces without producing a
+                // Shadow row or invoking the model.
+                if (details.payload.kind !== "bash") {
+                    return { kind: "defer" };
+                }
+
+                const evidence = buildBashJudgmentEvidence(details);
+                if (evidence === undefined) {
+                    log.review("ai_bash_judge.result", {
+                        schemaVersion: REVIEW_SCHEMA_VERSION,
+                        requestId: details.requestId,
+                        mode: "shadow",
+                        origin: "local",
+                        resultKind: "preflight_defer",
+                        verdict: null,
+                        effectiveVerdict: "defer",
+                        modelCalled: false,
+                        code: "invalid_evidence",
+                    });
+                    return { kind: "defer" };
+                }
+
+                // `captured.model` is the session-start snapshot. Config and
+                // model-select support are deliberately outside this slice.
+                const result = await requestStructuredVerdict(
+                    captured.model,
+                    evidence,
+                    captured.shutdown.signal,
+                );
+
+                if (result.kind === "judgment") {
+                    log.review("ai_bash_judge.result", {
+                        schemaVersion: REVIEW_SCHEMA_VERSION,
+                        requestId: details.requestId,
+                        mode: "shadow",
+                        origin: "local",
+                        resultKind: "judgment",
+                        verdict: result.verdict,
+                        effectiveVerdict: "defer",
+                        modelCalled: true,
+                        code: null,
+                        provider: result.metadata.provider,
+                        model: result.metadata.model,
+                        api: result.metadata.api,
+                        outputTokens: result.outputTokens,
+                        reasonLength: reasonLength(result.reason),
+                    });
+                } else {
+                    log.review("ai_bash_judge.result", {
+                        schemaVersion: REVIEW_SCHEMA_VERSION,
+                        requestId: details.requestId,
+                        mode: "shadow",
+                        origin: "local",
+                        resultKind: "infrastructure_failure",
+                        verdict: null,
+                        effectiveVerdict: "defer",
+                        modelCalled: result.modelCalled,
+                        code: result.code,
+                        provider: result.metadata?.provider ?? null,
+                        model: result.metadata?.model ?? null,
+                        api: result.metadata?.api ?? null,
+                    });
+                }
+
+                    // Bootstrap behavior is Shadow-only: the parsed prediction
+                    // is recorded but never changes permission authority.
+                    return { kind: "defer" };
+                } catch {
+                    // A link exception would abort the whole authority chain.
+                    // Keep provider/payload/session failures fail-closed and do
+                    // not include raw errors or authorization evidence in logs.
+                    log.debug("ai_bash_judge.exception");
+                    return { kind: "defer" };
+                }
             },
         );
-
-        console.error(`[${LINK_NAME}] registered`);
     }
 
     pi.on("session_start", (_event, ctx) => {
-        // 仅从 proven UI-present root 注册：headless / 进程内 subagent child
-        // 能解析到父进程的 service，但不能用 child 捕获的上下文注册，
-        // 否则还原出的命令会来自错误的会话。
         if (!ctx.hasUI) {
             return;
         }
 
-        session = ctx.sessionManager;
+        const sessionId = ctx.sessionManager.getSessionId();
+        if (!sessionId) {
+            return;
+        }
+
+        root = {
+            getSessionId: () => ctx.sessionManager.getSessionId(),
+            expectedSessionId: sessionId,
+            model: createModelAvailability(ctx.model, ctx.modelRegistry),
+            shutdown: new AbortController(),
+        };
         tryRegister();
     });
 
-    pi.events.on(PERMISSIONS_READY_CHANNEL, () => {
-        tryRegister();
-    });
+    pi.events.on(PERMISSIONS_READY_CHANNEL, tryRegister);
 
     pi.on("session_shutdown", () => {
+        root?.shutdown.abort();
         disposeAuthorizer?.();
-
         disposeAuthorizer = undefined;
-        session = undefined;
-
-        console.error(`[${LINK_NAME}] unregistered`);
+        root = undefined;
     });
 }

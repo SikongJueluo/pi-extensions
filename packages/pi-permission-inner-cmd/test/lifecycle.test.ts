@@ -229,6 +229,31 @@ describe("permissions:ready -> registerAuthorizer lifecycle", () => {
                 source: "tool_call",
                 agentName: "child",
                 message: "forwarded ask",
+                payload: {
+                    kind: "forwarded",
+                    request: {
+                        requester: {
+                            agentName: "child",
+                            forwarded: true,
+                            sessionId: "s1",
+                        },
+                        surface: "bash",
+                        toolName: "bash",
+                        invokedToolName: null,
+                        value: "bash",
+                        matchedPattern: null,
+                        commandContext: null,
+                        executedUnit: null,
+                    },
+                    evidence: [
+                        {
+                            label: "requested",
+                            text: "forwarded ask",
+                            detail: null,
+                        },
+                    ],
+                    annotations: [],
+                },
                 toolCallId: "call_1",
                 toolName: "bash",
                 forwarding: {

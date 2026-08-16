@@ -12,12 +12,10 @@
     ]
   },
   "dependencies": {
-    "@gotgenes/pi-permission-system": ">=24.0.0",
-    "@sikongjueluo/pi-permission-shared": "workspace:*"
+    "@gotgenes/pi-permission-system": ">=25.3.0"
   },
   "bundledDependencies": [
-    "@gotgenes/pi-permission-system",
-    "@sikongjueluo/pi-permission-shared"
+    "@gotgenes/pi-permission-system"
   ],
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

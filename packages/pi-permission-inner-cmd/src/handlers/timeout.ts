@@ -36,10 +36,10 @@ function stripWrapperUnit(
 /**
  * The simple-timeout wrapper handler (ADR 0001).
  *
- * Detection runs on `details.command` — the command unit the permission system
- * isolated as the ask trigger — which is always wrapper-leading even when the
- * full recovered command is a scaffold that starts with `cd`/`echo`/…. The
- * wrapper is then stripped from the FULL command and the whole de-wrapped
+ * Detection runs on the payload's decision-relevant command unit, which is
+ * wrapper-leading even when the complete command is a scaffold that starts
+ * with `cd`/`echo`/…. The wrapper is then stripped from the FULL command and the
+ * whole de-wrapped
  * compound is re-evaluated, so sibling commands (including dangerous ones) are
  * still judged and cannot hide behind the wrapper's allow.
  *
@@ -50,11 +50,14 @@ function stripWrapperUnit(
 export const timeoutHandler: CommandHandler = {
     id: "timeout",
     decide(ctx) {
-        const { command: fullCommand, details, query, log, evidence } = ctx;
-        const unit = details.command;
-        if (unit === undefined) {
-            return undefined;
-        }
+        const {
+            command: fullCommand,
+            unit,
+            details,
+            query,
+            log,
+            evidence,
+        } = ctx;
 
         const unitMatch = parseTimeoutWrapper(unit);
         if (unitMatch === undefined) {

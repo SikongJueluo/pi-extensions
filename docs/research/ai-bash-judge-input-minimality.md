@@ -1,5 +1,11 @@
 # Research: minimal evidence for the AI Bash authorization judge v0.1
 
+> **2026-08-16 update:** The missing-local-command finding below described
+> permission-system 24.0.0. Version 25.3 added a required structured prompt
+> payload: a local Bash ask carries the complete input as `full command`
+> evidence when it differs from the triggering unit. Forwarded 25.3/25.4 asks
+> still lack a separately structured child full command. See ADR 0004.
+
 ## Question
 
 Does the proposed six-cluster `JudgeRequestV1` contract contain fields that do not help the model decide whether to allow a Bash authorization request?

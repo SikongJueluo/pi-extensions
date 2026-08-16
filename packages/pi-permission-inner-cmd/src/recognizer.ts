@@ -57,14 +57,14 @@ export function isRecognizedWrapper(command: string): boolean {
     return parseTimeoutWrapper(command) !== undefined;
 }
 
-/** How a recovered Bash command relates to the v0.1 recognizer. */
+/** How a complete Bash command relates to the v0.1 recognizer. */
 export type WrapperClassification =
     | { readonly kind: "recognized"; readonly match: TimeoutWrapperMatch }
     | { readonly kind: "unsupportedTimeout" }
     | { readonly kind: "nonTimeout" };
 
 /**
- * Classify a recovered Bash command against the v0.1 recognizer.
+ * Classify a complete Bash command against the v0.1 recognizer.
  *
  * - `recognized`: the strict simple-timeout wrapper.
  * - `unsupportedTimeout`: the command invokes `timeout` but is not the

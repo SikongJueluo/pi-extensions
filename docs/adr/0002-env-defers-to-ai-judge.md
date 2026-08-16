@@ -55,7 +55,7 @@ This establishes a clean division between the two permission authorities:
   reasons about the full command *with* its environment, where non-transparency
   can be understood semantically rather than stripped.
 
-This is why the AI judge consumes the full recovered command from the shared
-recovery module (ADR 0001) — it needs the complete input, modifiers included, to
-judge non-transparent wrappers. See `CONTEXT.md` for the transparent /
+This is why the AI judge consumes the complete command from permission-system's
+structured prompt payload (ADR 0004) — it needs the complete input, modifiers
+included, to judge non-transparent wrappers. See `CONTEXT.md` for the transparent /
 non-transparent wrapper distinction.
