@@ -1,0 +1,3 @@
+{
+  "authorizerChain": ["ai-bash-judge", "inner-cmd"]
+}
