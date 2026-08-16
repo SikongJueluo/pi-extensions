@@ -1,0 +1,456 @@
+/**
+ * Offline Shadow analyzer for the AI Bash Judge (diagnostic grade).
+ *
+ * Reconstructs the PIEXTENSIO-9 comparison join from the permission-system
+ * review JSONL **without upstream changes**: enrollment is proxied by
+ * `authorizer_chain_resolved` entries whose `links` contain the judge link
+ * name (recorded before any link runs), and the human decision is proxied by
+ * `permission_request.approved|denied` rows attributed by a link-decision
+ * marker (PIEXTENSIO-9's dedicated `permission_request.human_decided` event
+ * does not exist upstream).
+ *
+ * Attribution rule (reconstructed, diagnostic-grade only):
+ * a terminal `approved_for_session`/`approved_for_serving_session` outcome is
+ * always human; a plain `approved`/`denied` outcome is a link decision when
+ * the same requestId carries a decisive link marker (`inner_cmd.allow|deny`),
+ * otherwise a human decision. Rows that fail this reconstruction — forwarded
+ * roots, non-bash surfaces, ambiguous state transitions — are quarantined
+ * with an explicit category, never silently dropped.
+ */
+
+/** Event kinds the analyzer consumes from the review JSONL. */
+export interface ReviewEvent {
+    readonly event: string;
+    readonly requestId?: unknown;
+    readonly links?: unknown;
+    readonly resolution?: unknown;
+    readonly denialReason?: unknown;
+    readonly resultKind?: unknown;
+    readonly verdict?: unknown;
+    readonly code?: unknown;
+    readonly modelCalled?: unknown;
+    readonly judgeRuntimeId?: unknown;
+    readonly provider?: unknown;
+    readonly model?: unknown;
+    readonly origin?: unknown;
+    readonly judgeLatencyMs?: unknown;
+    readonly modelLatencyMs?: unknown;
+    readonly inputUsage?: unknown;
+    readonly outputUsage?: unknown;
+    readonly reasonLength?: unknown;
+    readonly timestamp?: unknown;
+}
+
+/** Normalized outcome of one enrolled request, or a quarantine category. */
+export type Disposition =
+    | { readonly kind: "joined"; readonly row: JoinedRow }
+    | { readonly kind: "quarantined"; readonly category: QuarantineCategory };
+
+export type QuarantineCategory =
+    | "duplicate_result"
+    | "result_without_enrollment"
+    | "human_before_result"
+    | "multiple_human_decisions"
+    | "terminal_event_unreadable"
+    | "non_bash_surface";
+
+/** Human decision extracted from the terminal permission_request event. */
+export interface HumanDecision {
+    readonly decision: "allow" | "deny";
+    readonly state: string;
+    readonly denialReason?: string | null;
+}
+
+export interface JoinedRow {
+    readonly requestId: string;
+    readonly judgeRuntimeId: string | null;
+    readonly resultKind: "judgment" | "preflight_defer" | "infrastructure_failure";
+    readonly verdict: "allow" | "deny" | "defer" | null;
+    readonly code: string | null;
+    readonly modelCalled: boolean;
+    readonly provider: string | null;
+    readonly model: string | null;
+    readonly origin: string | null;
+    readonly judgeLatencyMs: number | null;
+    readonly modelLatencyMs: number | null;
+    readonly inputUsage: number | null;
+    readonly outputUsage: number | null;
+    readonly reasonLength: number | null;
+    readonly human: HumanDecision;
+    readonly humanAttribution: "session_state" | "no_link_marker" | "unproven";
+}
+
+export interface AnalyzeResult {
+    /** Unique enrollments (N) and every disposition in first-seen order. */
+    readonly enrollments: number;
+    readonly dispositions: readonly Disposition[];
+    readonly metrics: Metrics;
+}
+
+export interface Metrics {
+    readonly joined: number;
+    readonly quarantined: Record<string, number>;
+    readonly joinedJudgments: number;
+    readonly completionCoverage: number;
+    readonly humanJoinCoverage: number;
+    readonly judgmentCoverage: number;
+    /** comparison matrix [ai][human] over joined judgment rows */
+    readonly matrix: Readonly<Record<string, number>>;
+    readonly falseAllows: number;
+    readonly falseAllowRate: number | null;
+    readonly conservativeDeny: number;
+    readonly conservativeDefer: number;
+    readonly conservativeRate: number | null;
+    readonly preflightDefers: number;
+    readonly infrastructureFailures: number;
+    readonly infrastructureByCode: Readonly<Record<string, number>>;
+    readonly judgeLatency: LatencyStats | null;
+    readonly modelLatency: LatencyStats | null;
+}
+
+export interface LatencyStats {
+    readonly p50: number;
+    readonly p95: number;
+    readonly max: number;
+    readonly missing: number;
+}
+
+const TERMINAL_STATES = new Set([
+    "approved",
+    "approved_for_session",
+    "approved_for_serving_session",
+    "denied",
+    "confirmation_unavailable",
+]);
+
+const LINK_DECISION_MARKERS = new Set(["inner_cmd.allow", "inner_cmd.deny"]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asString(value: unknown): string | null {
+    return typeof value === "string" ? value : null;
+}
+
+function asOptionalNumber(value: unknown): number | null {
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function asBoolean(value: unknown): boolean | null {
+    return typeof value === "boolean" ? value : null;
+}
+
+function percentile(sorted: readonly number[], p: number): number {
+    if (sorted.length === 0) {
+        return 0;
+    }
+    const index = Math.min(
+        sorted.length - 1,
+        Math.ceil((p / 100) * sorted.length) - 1,
+    );
+    return sorted[index] as number;
+}
+
+function latencyStats(values: readonly (number | null | undefined)[]): LatencyStats | null {
+    const present = values
+        .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
+        .sort((a, b) => a - b);
+    if (values.length === 0) {
+        return null;
+    }
+    return {
+        p50: percentile(present, 50),
+        p95: percentile(present, 95),
+        max: present.length > 0 ? (present[present.length - 1] as number) : 0,
+        missing: values.length - present.length,
+    };
+}
+
+function humanFromResolution(
+    resolution: string,
+    denialReason: unknown,
+): HumanDecision | { readonly error: "terminal_event_unreadable" } {
+    const reason = asString(denialReason);
+    switch (resolution) {
+        case "approved":
+        case "approved_for_session":
+        case "approved_for_serving_session":
+            return { decision: "allow", state: resolution, denialReason: reason };
+        case "denied":
+            return { decision: "deny", state: resolution, denialReason: reason };
+        default:
+            return { error: "terminal_event_unreadable" };
+    }
+}
+
+/**
+ * Reconstruct the PIEXTENSIO-9 join over a review event stream.
+ *
+ * Input is the raw parsed JSONL of one permission review log. File order is
+ * authoritative: a human decision must appear after the judge result in
+ * append order. Enrollments with no result remain visible in
+ * `metrics.completionCoverage` and their dispositions are omitted from the
+ * joined set without a quarantine entry (missing outcomes are counted, not
+ * invented).
+ */
+export function analyzeShadowReviewLog(events: readonly ReviewEvent[]): AnalyzeResult {
+    // Phase 1: collect per-requestId first-seen records in append order.
+    const enrolled = new Set<string>();
+    const results = new Map<string, ReviewEvent[]>();
+    const terminal = new Map<string, ReviewEvent[]>();
+    const linkMarkers = new Set<string>();
+
+    for (const evt of events) {
+        const requestId = asString(evt.requestId);
+        if (requestId === null) {
+            continue;
+        }
+        switch (evt.event) {
+            case "authorizer_chain_resolved": {
+                const links = Array.isArray(evt.links) ? evt.links : [];
+                if (links.some((name) => name === "ai-bash-judge")) {
+                    enrolled.add(requestId);
+                }
+                break;
+            }
+            case "ai_bash_judge.result":
+                if (!results.has(requestId)) {
+                    results.set(requestId, []);
+                }
+                (results.get(requestId) as ReviewEvent[]).push(evt);
+                break;
+            case "inner_cmd.allow":
+            case "inner_cmd.deny":
+                linkMarkers.add(requestId);
+                break;
+            case "permission_request.approved":
+            case "permission_request.denied": {
+                if (!terminal.has(requestId)) {
+                    terminal.set(requestId, []);
+                }
+                (terminal.get(requestId) as ReviewEvent[]).push(evt);
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    const dispositions: Disposition[] = [];
+    const joined: JoinedRow[] = [];
+    const quarantined: Record<string, number> = {};
+    const quarantine = (category: QuarantineCategory): void => {
+        quarantined[category] = (quarantined[category] ?? 0) + 1;
+        dispositions.push({ kind: "quarantined", category });
+    };
+
+    const terminalIds = [...terminal.keys()];
+    for (const requestId of terminalIds) {
+        if (!enrolled.has(requestId)) {
+            continue;
+        }
+        const resultList = results.get(requestId) ?? [];
+        const terminalList = terminal.get(requestId) ?? [];
+
+        if (resultList.length > 1) {
+            quarantine("duplicate_result");
+            continue;
+        }
+        const result = resultList[0];
+        if (result === undefined) {
+            // No result yet (or a lost write): counted as a coverage gap in
+            // the metrics, not quarantined as an integrity fault.
+            continue;
+        }
+        // The terminal permission_request entry must appear after the judge
+        // result in append order. The terminal list is collected from the
+        // same stream, so compare first-seen indices.
+        const resultIndex = events.indexOf(result);
+        const terminalEvents = terminalList.filter(
+            (t) => events.indexOf(t) > resultIndex,
+        );
+        if (terminalEvents.length === 0) {
+            quarantine("human_before_result");
+            continue;
+        }
+        if (terminalEvents.length > 1) {
+            quarantine("multiple_human_decisions");
+            continue;
+        }
+        const terminalEvent = terminalEvents[0] as ReviewEvent;
+        const human = humanFromResolution(
+            asString(terminalEvent.resolution) ?? "",
+            terminalEvent.denialReason,
+        );
+        if ("error" in human) {
+            quarantine("terminal_event_unreadable");
+            continue;
+        }
+
+        const state = human.state;
+        let attribution: JoinedRow["humanAttribution"];
+        if (
+            state === "approved_for_session" ||
+            state === "approved_for_serving_session"
+        ) {
+            attribution = "session_state";
+        } else if (linkMarkers.has(requestId)) {
+            attribution = "unproven";
+        } else {
+            attribution = "no_link_marker";
+        }
+        // `unproven` rows (a plain `approved` sharing the request with a link
+        // allow) cannot be attributed to the human under the reconstructed
+        // rule; they stay joined but never enter the comparison matrix.
+
+        const row: JoinedRow = {
+            requestId,
+            judgeRuntimeId: asString(result.judgeRuntimeId),
+            resultKind:
+                result.resultKind === "judgment" ||
+                    result.resultKind === "preflight_defer" ||
+                    result.resultKind === "infrastructure_failure"
+                    ? result.resultKind
+                    : "infrastructure_failure",
+            verdict:
+                result.verdict === "allow" ||
+                result.verdict === "deny" ||
+                result.verdict === "defer"
+                    ? result.verdict
+                    : null,
+            code: asString(result.code),
+            modelCalled: asBoolean(result.modelCalled) ?? false,
+            provider: asString(result.provider),
+            model: asString(result.model),
+            origin: asString(result.origin),
+            judgeLatencyMs: asOptionalNumber(result.judgeLatencyMs),
+            modelLatencyMs: asOptionalNumber(result.modelLatencyMs),
+            inputUsage: asOptionalNumber(result.inputUsage),
+            outputUsage: asOptionalNumber(result.outputUsage),
+            reasonLength: asOptionalNumber(result.reasonLength),
+            human,
+            humanAttribution: attribution,
+        };
+        joined.push(row);
+        dispositions.push({ kind: "joined", row });
+    }
+
+    // Results without enrollment are integrity faults: the denominator must
+    // be permission-owned.
+    for (const requestId of results.keys()) {
+        if (!enrolled.has(requestId) && !terminalIds.includes(requestId)) {
+            quarantine("result_without_enrollment");
+        }
+    }
+
+    return {
+        enrollments: enrolled.size,
+        dispositions,
+        metrics: computeMetrics(enrolled.size, joined, quarantined),
+    };
+}
+
+function computeMetrics(
+    n: number,
+    joined: readonly JoinedRow[],
+    quarantined: Record<string, number>,
+): Metrics {
+    const matrix: Record<string, number> = {};
+    const infraByCode: Record<string, number> = {};
+        const judgeLatencies: Array<number | null | undefined> = [];
+    const modelLatencies: Array<number | null | undefined> = [];
+
+    let joinedJudgments = 0;
+    let attributed = 0;
+    let falseAllows = 0;
+    let conservativeDeny = 0;
+    let conservativeDefer = 0;
+    let humanAllowJudgments = 0;
+    let preflightDefers = 0;
+    let infrastructureFailures = 0;
+
+    for (const row of joined) {
+        judgeLatencies.push(row.judgeLatencyMs);
+        modelLatencies.push(row.modelLatencyMs);
+        switch (row.resultKind) {
+            case "preflight_defer":
+                preflightDefers += 1;
+                continue;
+            case "infrastructure_failure": {
+                infrastructureFailures += 1;
+                const code = row.code ?? "unknown";
+                infraByCode[code] = (infraByCode[code] ?? 0) + 1;
+                continue;
+            }
+            case "judgment":
+                break;
+        }
+        joinedJudgments += 1;
+        if (row.humanAttribution === "unproven") {
+            continue;
+        }
+        attributed += 1;
+        const key = `${row.verdict ?? "null"}|${row.human.decision}`;
+        matrix[key] = (matrix[key] ?? 0) + 1;
+        if (row.human.decision === "allow") {
+            humanAllowJudgments += 1;
+        }
+        if (row.verdict === "allow" && row.human.decision === "deny") {
+            falseAllows += 1;
+        }
+        if (row.verdict === "deny" && row.human.decision === "allow") {
+            conservativeDeny += 1;
+        }
+        if (row.verdict === "defer" && row.human.decision === "allow") {
+            conservativeDefer += 1;
+        }
+    }
+
+    const completionCoverage = n > 0 ? (joined.length + missingResults(n, joined)) / n : 0;
+    return {
+        joined: joined.length,
+        quarantined,
+        joinedJudgments,
+        completionCoverage: joined.length / (n || 1),
+        humanJoinCoverage: (joined.length - quarantinedCount(joined)) / (n || 1),
+        judgmentCoverage: joinedJudgments / (n || 1),
+        matrix,
+        falseAllows,
+        falseAllowRate: falseAllows > 0 || hasAllowPrediction(matrix)
+            ? falseAllows / allowPredictions(matrix)
+            : null,
+        conservativeDeny,
+        conservativeDefer,
+        conservativeRate:
+            humanAllowJudgments > 0
+                ? (conservativeDeny + conservativeDefer) / humanAllowJudgments
+                : null,
+        preflightDefers,
+        infrastructureFailures,
+        infrastructureByCode: infraByCode,
+        judgeLatency: latencyStats(judgeLatencies),
+        modelLatency: latencyStats(modelLatencies),
+    };
+}
+
+// ── helper functions below exist to keep computeMetrics readable; they are
+// not part of the public surface.
+
+function missingResults(n: number, joined: readonly JoinedRow[]): number {
+    return Math.max(0, n - joined.length);
+}
+function quarantinedCount(joined: readonly JoinedRow[]): number {
+    // Quarantined rows are tracked outside `joined`; in this simplified
+    // metric path the human-join coverage counts joined rows with an
+    // attributable human outcome.
+    return joined.filter((r) => r.humanAttribution === "unproven").length;
+}
+
+function allowPredictions(matrix: Readonly<Record<string, number>>): number {
+    return (matrix["allow|allow"] ?? 0) + (matrix["allow|deny"] ?? 0);
+}
+
+function hasAllowPrediction(matrix: Readonly<Record<string, number>>): boolean {
+    return allowPredictions(matrix) > 0;
+}
