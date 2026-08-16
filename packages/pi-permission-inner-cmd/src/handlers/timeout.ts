@@ -108,13 +108,17 @@ export const timeoutHandler: CommandHandler = {
         );
         switch (result.state) {
             case "allow":
+                // `requestId` joins this link decision to the gate's
+                // permission_request.* entries for offline analysis.
                 log.review("inner_cmd.allow", {
+                    requestId: details.requestId,
                     command: fullCommand,
                     innerCommand,
                 });
                 return { kind: "allow" };
             case "deny":
                 log.review("inner_cmd.deny", {
+                    requestId: details.requestId,
                     command: fullCommand,
                     innerCommand,
                 });

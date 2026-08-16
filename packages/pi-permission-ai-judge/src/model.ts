@@ -55,7 +55,9 @@ export type ModelAttempt =
           readonly verdict: SemanticVerdict;
           readonly reason: string;
           readonly metadata: ModelMetadata;
+          readonly inputTokens: number | null;
           readonly outputTokens: number;
+          readonly modelLatencyMs: number;
       }
     | {
           readonly kind: "infrastructure_failure";
@@ -64,6 +66,10 @@ export type ModelAttempt =
           readonly modelCalled: boolean;
           /** Completion-token usage when a response arrived, else null. */
           readonly outputTokens?: number | null;
+          /** Prompt-token usage when a response arrived, else null. */
+          readonly inputTokens?: number | null;
+          /** Wall-clock model-call latency; null when the model was not called. */
+          readonly modelLatencyMs: number | null;
       };
 
 function forcedToolChoice(api: string): unknown | undefined {
@@ -158,17 +164,22 @@ export async function requestStructuredVerdict(
                     ? availability.metadata
                     : undefined,
             modelCalled: false,
+            modelLatencyMs: null,
         };
     }
 
     let modelCalled = false;
     let observedOutputTokens: number | null = null;
+    let observedInputTokens: number | null = null;
+    let callStartedAt = 0;
     const failure = (code: InfrastructureCode): ModelAttempt => ({
         kind: "infrastructure_failure",
         code,
         metadata: availability.metadata,
         modelCalled,
         outputTokens: observedOutputTokens,
+        inputTokens: observedInputTokens,
+        modelLatencyMs: modelCalled ? Date.now() - callStartedAt : null,
     });
     const timeoutController = new AbortController();
     const requestController = new AbortController();
@@ -186,6 +197,7 @@ export async function requestStructuredVerdict(
         }
 
         modelCalled = true;
+        callStartedAt = Date.now();
         const response = await availability.complete(
             buildJudgeContext(evidence),
             requestController.signal,
@@ -202,6 +214,10 @@ export async function requestStructuredVerdict(
         }
 
         const outputTokens = response.usage.output;
+        const inputTokens = response.usage.input;
+        if (Number.isFinite(inputTokens)) {
+            observedInputTokens = inputTokens;
+        }
         if (Number.isFinite(outputTokens)) {
             observedOutputTokens = outputTokens;
         }
@@ -251,7 +267,9 @@ export async function requestStructuredVerdict(
             verdict: args.verdict,
             reason,
             metadata: availability.metadata,
+            inputTokens: observedInputTokens,
             outputTokens,
+            modelLatencyMs: Date.now() - callStartedAt,
         };
     } catch {
         const code: InfrastructureCode = shutdownSignal.aborted

@@ -215,10 +215,22 @@ describe("AI judge lifecycle", () => {
                 details: expect.objectContaining({
                     requestId: "req-1",
                     mode: "shadow",
+                    origin: "local",
+                    judgeRuntimeId: expect.any(String),
+                    promptVersion: "bash-shadow-v1",
+                    toolSchemaVersion: "report-verdict-v1",
+                    judgeLatencyMs: expect.any(Number),
+                    modelLatencyMs: expect.any(Number),
+                    inputUsage: 20,
+                    outputUsage: 10,
                     resultKind: "judgment",
                     verdict: "allow",
                     effectiveVerdict: "defer",
                     modelCalled: true,
+                    evidenceQuality: expect.objectContaining({
+                        structuredFullInput: true,
+                        explicitUserText: false,
+                    }),
                 }),
             },
         ]);
@@ -227,6 +239,80 @@ describe("AI judge lifecycle", () => {
 
         harness.shutdown();
         expect(dispose).toHaveBeenCalledTimes(1);
+    });
+
+    it("records a forwarded ask as a preflight defer without calling the model", async () => {
+        let authorize: Authorizer["authorize"] | undefined;
+        const service = {
+            registerAuthorizer: vi.fn((_name, callback) => {
+                authorize = callback;
+                return vi.fn();
+            }),
+            checkPermission: vi.fn(),
+            getToolPermission: vi.fn(),
+        } as unknown as PermissionsService;
+        publishPermissionsService(service);
+        publishedService = service;
+
+        const complete = vi.fn();
+        const ctx = {
+            hasUI: true,
+            sessionManager: { getSessionId: () => "session-root" },
+            model: {
+                id: "test-model",
+                provider: "test-provider",
+                api: "openai-codex-responses",
+            } as Model<any>,
+            modelRegistry: { complete },
+        } as unknown as ExtensionContext;
+
+        const harness = createFakePi();
+        extension(harness.pi);
+        harness.start(ctx);
+        harness.ready();
+
+        const reviews: Array<{
+            event: string;
+            details?: Record<string, unknown>;
+        }> = [];
+        const forwarded = {
+            ...ask(),
+            forwarding: { requestId: "fwd-1" } as never,
+        } as PromptPermissionDetails;
+        const verdict = await authorize!(
+            forwarded,
+            {
+                checkPermission: vi.fn(),
+                getToolPermission: vi.fn(),
+            },
+            {
+                review: (event, details) => reviews.push({ event, details }),
+                debug: vi.fn(),
+            },
+        );
+
+        expect(verdict).toEqual({ kind: "defer" });
+        expect(complete).not.toHaveBeenCalled();
+        expect(reviews).toEqual([
+            {
+                event: "ai_bash_judge.result",
+                details: expect.objectContaining({
+                    requestId: "req-1",
+                    origin: "forwarded",
+                    resultKind: "preflight_defer",
+                    verdict: null,
+                    effectiveVerdict: "defer",
+                    modelCalled: false,
+                    code: "missing_structured_input",
+                    evidenceQuality: expect.objectContaining({
+                        structuredFullInput: false,
+                        forwardedProvenance: false,
+                    }),
+                }),
+            },
+        ]);
+
+        harness.shutdown();
     });
 
     it("does not register from a headless child", () => {

@@ -84,7 +84,9 @@ describe("requestStructuredVerdict", () => {
             verdict: "defer",
             reason: "User intent is unavailable.",
             metadata,
+            inputTokens: 10,
             outputTokens: 12,
+            modelLatencyMs: expect.any(Number),
         });
     });
 
@@ -264,6 +266,7 @@ describe("requestStructuredVerdict", () => {
             code: "no_model",
             metadata: undefined,
             modelCalled: false,
+            modelLatencyMs: null,
         });
 
         await expect(
@@ -277,6 +280,7 @@ describe("requestStructuredVerdict", () => {
             code: "unsupported_api",
             metadata,
             modelCalled: false,
+            modelLatencyMs: null,
         });
 
         const shutdown = new AbortController();

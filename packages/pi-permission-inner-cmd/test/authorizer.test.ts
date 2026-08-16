@@ -172,6 +172,7 @@ describe("authorizeInnerCommand — recognized wrapper verdicts", () => {
                 level: "review",
                 event: "inner_cmd.allow",
                 details: {
+                    requestId: "req-1",
                     command: "timeout 30s pnpm test",
                     innerCommand: "pnpm test",
                 },
@@ -211,6 +212,7 @@ describe("authorizeInnerCommand — recognized wrapper verdicts", () => {
                 level: "review",
                 event: "inner_cmd.deny",
                 details: {
+                    requestId: "req-1",
                     command: "timeout 30s rm -rf /",
                     innerCommand: "rm -rf /",
                 },
@@ -547,6 +549,7 @@ describe("authorizeInnerCommand — scaffolded commands", () => {
                 level: "review",
                 event: "inner_cmd.allow",
                 details: {
+                    requestId: "req-1",
                     command: full,
                     innerCommand: "pnpm install --frozen-lockfile",
                 },
