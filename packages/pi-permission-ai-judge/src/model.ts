@@ -14,7 +14,7 @@ import type { BashJudgmentEvidence } from "./evidence";
 // provider segments (e.g. zai glm-5.2, observed racing the deadline at
 // `thinking: high`) should configure a non-default timeoutMs within the range
 // and be treated as a distinct configuration cohort.
-const DEFAULT_TIMEOUT_MS = 15_000;
+export const DEFAULT_TIMEOUT_MS = 15_000;
 export const MIN_TIMEOUT_MS = 5_000;
 export const MAX_TIMEOUT_MS = 30_000;
 // Reasoning-token aware cap. Providers that bill chain-of-thought inside

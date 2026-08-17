@@ -179,6 +179,7 @@ describe("AI judge lifecycle", () => {
             sessionManager,
             model,
             modelRegistry: { complete },
+            ui: { notify: vi.fn() },
         } as unknown as ExtensionContext;
 
         const harness = createFakePi();
@@ -264,6 +265,7 @@ describe("AI judge lifecycle", () => {
                 api: "openai-codex-responses",
             } as Model<any>,
             modelRegistry: { complete },
+            ui: { notify: vi.fn() },
         } as unknown as ExtensionContext;
 
         const harness = createFakePi();

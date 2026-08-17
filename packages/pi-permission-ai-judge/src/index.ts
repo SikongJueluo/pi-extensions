@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
     getPermissionsService,
     PERMISSIONS_READY_CHANNEL,
@@ -11,6 +12,7 @@ import {
     type ModelAvailability,
 } from "./model";
 import { PROMPT_VERSION, TOOL_SCHEMA_VERSION } from "./prompt";
+import { loadJudgeConfig, type EffectiveJudgeConfig } from "./config";
 
 const LINK_NAME = "ai-bash-judge";
 const REVIEW_SCHEMA_VERSION = 1;
@@ -22,6 +24,9 @@ interface RootSession {
     readonly shutdown: AbortController;
     /** Opaque per-runtime identity for cohort segmentation. */
     readonly judgeRuntimeId: string;
+    /** Immutable effective-config snapshot captured at session start
+     * (reload-only application: a config edit lands on the next session). */
+    readonly config: EffectiveJudgeConfig;
 }
 
 function reasonLength(reason: string): number {
@@ -61,12 +66,17 @@ function resultBase(
     judgeRuntimeId: string,
     details: PromptPermissionDetails,
     startedAt: number,
+    config: EffectiveJudgeConfig,
 ): Record<string, unknown> {
     return {
         schemaVersion: REVIEW_SCHEMA_VERSION,
         requestId: details.requestId,
         judgeRuntimeId,
-        mode: "shadow",
+        mode: config.mode,
+        // v0.1 fail-closed: `enforce` loads here but the truth table can
+        // never grant real authority, so the effective verdict below stays
+        // defer; the configured mode is recorded for audit.
+        timeoutCohort: config.timeoutCohort,
         origin:
             details.forwarding !== undefined ||
                 details.payload.kind === "forwarded"
@@ -113,6 +123,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                                 captured.judgeRuntimeId,
                                 details,
                                 startedAt,
+                                captured.config,
                             ),
                             resultKind: "preflight_defer",
                             verdict: null,
@@ -139,6 +150,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                                 captured.judgeRuntimeId,
                                 details,
                                 startedAt,
+                                captured.config,
                             ),
                             resultKind: "preflight_defer",
                             verdict: null,
@@ -157,6 +169,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                                 captured.judgeRuntimeId,
                                 details,
                                 startedAt,
+                                captured.config,
                             ),
                             resultKind: "preflight_defer",
                             verdict: null,
@@ -174,6 +187,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                         captured.model,
                         evidence,
                         captured.shutdown.signal,
+                        captured.config.timeoutMs,
                     );
 
                     if (result.kind === "judgment") {
@@ -182,6 +196,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                                 captured.judgeRuntimeId,
                                 details,
                                 startedAt,
+                                captured.config,
                             ),
                             resultKind: "judgment",
                             verdict: result.verdict,
@@ -207,6 +222,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                                 captured.judgeRuntimeId,
                                 details,
                                 startedAt,
+                                captured.config,
                             ),
                             resultKind: "infrastructure_failure",
                             verdict: null,
@@ -253,7 +269,14 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
             model: createModelAvailability(ctx.model, ctx.modelRegistry),
             shutdown: new AbortController(),
             judgeRuntimeId: crypto.randomUUID(),
+            config: loadJudgeConfig({ agentDir: getAgentDir() }),
         };
+        for (const diagnostic of root.config.diagnostics) {
+            ctx.ui.notify(
+                `ai-bash-judge config: ${diagnostic.key} — ${diagnostic.problem}; using ${diagnostic.fallback}`,
+                "warning",
+            );
+        }
         tryRegister();
     });
 
