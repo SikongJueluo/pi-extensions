@@ -178,6 +178,8 @@ function humanFromResolution(
         case "approved_for_serving_session":
             return { decision: "allow", state: resolution, denialReason: reason };
         case "denied":
+        // Upstream's provide-reason deny writes `denied_with_reason`.
+        case "denied_with_reason":
             return { decision: "deny", state: resolution, denialReason: reason };
         default:
             return { error: "terminal_event_unreadable" };
@@ -275,8 +277,21 @@ export function analyzeShadowReviewLog(events: readonly ReviewEvent[]): AnalyzeR
             continue;
         }
         if (terminalEvents.length > 1) {
-            quarantine("multiple_human_decisions");
-            continue;
+            // Upstream's forwarded decision path double-writes the terminal
+            // event with the same requestId and resolution in adjacent file
+            // order (round 1: two `approved` or two `denied_with_reason`
+            // rows in the same second). Identical-resolution duplicates are
+            // that pattern, not an integrity fault: collapse to the first
+            // row. Conflicting resolutions stay quarantined — the analyzer
+            // must never pick a convenient outcome among alternatives
+            // (PIEXTENSIO-9).
+            const distinct = new Set(
+                terminalEvents.map((t) => asString(t.resolution) ?? ""),
+            );
+            if (distinct.size > 1) {
+                quarantine("multiple_human_decisions");
+                continue;
+            }
         }
         const terminalEvent = terminalEvents[0] as ReviewEvent;
         const human = humanFromResolution(

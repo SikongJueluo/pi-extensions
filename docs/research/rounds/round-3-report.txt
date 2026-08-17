@@ -1,27 +1,26 @@
 AI Bash Judge — Shadow diagnostic report
 grade: DIAGNOSTIC (reconstructed join; not promotion-grade)
-asOf: 2026-08-17T09:56:55.094Z
+asOf: 2026-08-17T10:43:52.269Z
 source: /home/sikongjueluo/.pi/agent/extensions/pi-permission-system/logs/pi-permission-system-permission-review.jsonl
 
-enrollments (N): 9
-joined rows: 9
-joined judgments: 6
+enrollments (N): 5
+joined rows: 5
+joined judgments: 5
 
 completion coverage: 100.0%
 human-join coverage: 100.0%
-judgment coverage: 66.7%
+judgment coverage: 100.0%
 
 comparison matrix [verdict|human]:
   allow|allow: 3
-  allow|deny: 1
   defer|allow: 1
-  deny|allow: 1
+  defer|deny: 1
 
-false allows: 1 (rate 25.0%)
-conservative: deny 1, defer 1 (rate 40.0%)
+false allows: 0 (rate 0.0%)
+conservative: deny 0, defer 1 (rate 25.0%)
 
-preflight defers: 3
+preflight defers: 0
 infrastructure failures: 0
 
-judge latency: p50=4231ms p95=9052ms max=9052ms missing=0
-model latency: p50=4317ms p95=9052ms max=9052ms missing=3
+judge latency: p50=4223ms p95=11949ms max=11949ms missing=0
+model latency: p50=4223ms p95=11949ms max=11949ms missing=0

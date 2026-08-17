@@ -157,6 +157,53 @@ describe("analyzeShadowReviewLog — attribution", () => {
 });
 
 describe("analyzeShadowReviewLog — integrity", () => {
+    it("normalizes denied_with_reason to a human deny (false-allow rows stay visible)", () => {
+        const { metrics } = analyzeShadowReviewLog(
+            lifecycle({ verdict: "allow", resolution: "denied_with_reason" }),
+        );
+        expect(metrics.quarantined).toEqual({});
+        expect(metrics.matrix).toEqual({ "allow|deny": 1 });
+        expect(metrics.falseAllows).toBe(1);
+        expect(metrics.falseAllowRate).toBe(1);
+    });
+
+    it("collapses the forwarded path's identical double terminal rows", () => {
+        const events: ReviewEvent[] = [
+            { event: "authorizer_chain_resolved", requestId: "f", links: ["ai-bash-judge"] },
+            {
+                event: "ai_bash_judge.result",
+                requestId: "f",
+                resultKind: "preflight_defer",
+                verdict: null,
+                code: "missing_structured_input",
+                origin: "forwarded",
+            },
+            { event: "permission_request.approved", requestId: "f", resolution: "approved" },
+            { event: "permission_request.approved", requestId: "f", resolution: "approved" },
+        ];
+        const { metrics } = analyzeShadowReviewLog(events);
+        expect(metrics.quarantined).toEqual({});
+        expect(metrics.joined).toBe(1);
+        expect(metrics.preflightDefers).toBe(1);
+        expect(metrics.matrix).toEqual({});
+    });
+
+    it("still quarantines conflicting duplicate human decisions", () => {
+        const events: ReviewEvent[] = [
+            { event: "authorizer_chain_resolved", requestId: "c", links: ["ai-bash-judge"] },
+            {
+                event: "ai_bash_judge.result",
+                requestId: "c",
+                resultKind: "judgment",
+                verdict: "allow",
+            },
+            { event: "permission_request.approved", requestId: "c", resolution: "approved" },
+            { event: "permission_request.denied", requestId: "c", resolution: "denied" },
+        ];
+        const { metrics } = analyzeShadowReviewLog(events);
+        expect(metrics.quarantined).toEqual({ multiple_human_decisions: 1 });
+        expect(metrics.joined).toBe(0);
+    });
     it("quarantines a duplicate judge result", () => {
         const base = lifecycle({ verdict: "allow" });
         const dup = base.map((e) => e).concat([

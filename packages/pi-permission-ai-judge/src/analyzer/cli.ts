@@ -14,6 +14,7 @@ const USAGE = `usage: analyze-shadow <review-jsonl-path> [options]
 
 options:
   --after <iso8601>   only consider events with timestamp >= this instant
+  --before <iso8601>  only consider events with timestamp <= this instant
   --help              show this help
 
 The report is diagnostic-grade: the join reconstructs enrollment and human
@@ -23,27 +24,33 @@ and matrix numbers must not be used as promotion-grade evidence.`;
 interface CliOptions {
     readonly path: string;
     readonly after: Date | null;
+    readonly before: Date | null;
 }
 
 function parseArgs(argv: readonly string[]): CliOptions | { error: string } {
     const args = argv.slice(2);
     let path: string | undefined;
     let after: Date | null = null;
+    let before: Date | null = null;
     for (let i = 0; i < args.length; i += 1) {
         const arg = args[i] as string;
         if (arg === "--help" || arg === "-h") {
             return { error: USAGE };
         }
-        if (arg === "--after") {
+        if (arg === "--after" || arg === "--before") {
             const value = args[i + 1];
             if (value === undefined) {
-                return { error: "--after requires an ISO-8601 timestamp" };
+                return { error: `${arg} requires an ISO-8601 timestamp` };
             }
             const parsed = new Date(value);
             if (Number.isNaN(parsed.getTime())) {
-                return { error: `invalid --after timestamp: ${value}` };
+                return { error: `invalid ${arg} timestamp: ${value}` };
             }
-            after = parsed;
+            if (arg === "--after") {
+                after = parsed;
+            } else {
+                before = parsed;
+            }
             i += 1;
             continue;
         }
@@ -58,7 +65,7 @@ function parseArgs(argv: readonly string[]): CliOptions | { error: string } {
     if (path === undefined) {
         return { error: "missing input path" };
     }
-    return { path, after };
+    return { path, after, before };
 }
 
 function parseLine(line: string, lineNo: number): ReviewEvent | null {
@@ -116,15 +123,18 @@ function main(): void {
         .map((line, index) => parseLine(line, index + 1))
         .filter((evt): evt is ReviewEvent => evt !== null)
         .filter((evt) => {
-            if (parsed.after === null) {
-                return true;
-            }
             const ts = typeof evt.timestamp === "string" ? evt.timestamp : null;
             if (ts === null) {
                 return true;
             }
             const time = new Date(ts).getTime();
-            return Number.isNaN(time) || time >= parsed.after.getTime();
+            if (parsed.after !== null && !Number.isNaN(time) && time < parsed.after.getTime()) {
+                return false;
+            }
+            if (parsed.before !== null && !Number.isNaN(time) && time > parsed.before.getTime()) {
+                return false;
+            }
+            return true;
         });
 
     const { enrollments, metrics } = analyzeShadowReviewLog(events);
@@ -142,6 +152,17 @@ function main(): void {
     out.write(`completion coverage: ${fmtRate(metrics.completionCoverage)}\n`);
     out.write(`human-join coverage: ${fmtRate(metrics.humanJoinCoverage)}\n`);
     out.write(`judgment coverage: ${fmtRate(metrics.judgmentCoverage)}\n\n`);
+
+    const quarantineEntries = Object.entries(metrics.quarantined).sort(
+        ([a], [b]) => a.localeCompare(b),
+    );
+    if (quarantineEntries.length > 0) {
+        out.write("quarantined rows:\n");
+        for (const [category, count] of quarantineEntries) {
+            out.write(`  ${category}: ${count}\n`);
+        }
+        out.write("\n");
+    }
 
     out.write("comparison matrix [verdict|human]:\n");
     const keys = Object.keys(metrics.matrix).sort();

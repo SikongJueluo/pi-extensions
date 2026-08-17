@@ -30,6 +30,16 @@ dependency).
 chain never runs for rule-satisfied or session-remembered asks, so they are
 correctly outside the denominator.
 
+Two further upstream behaviors are encoded as rules (round 1 findings):
+
+- Terminal resolutions `denied` and `denied_with_reason` (upstream's
+  provide-reason deny) both normalize to human deny.
+- The forwarded decision path double-writes the terminal row with the same
+  `requestId` and resolution in adjacent file order. Identical-resolution
+  duplicates are collapsed to the first row; **conflicting** resolutions
+  remain quarantined as `multiple_human_decisions` — the analyzer must
+  never pick a convenient outcome among alternatives (PIEXTENSIO-9).
+
 Rows where attribution fails (a plain `approved` sharing the request with a
 link allow — the one case the marker rule cannot decide) stay joined but are
 marked `unproven` and never enter the comparison matrix. Duplicate results,
