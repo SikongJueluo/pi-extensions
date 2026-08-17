@@ -1,5 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import type { Model } from "@earendil-works/pi-ai";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import {
     getPermissionsService,
     PERMISSIONS_READY_CHANNEL,
@@ -20,7 +22,9 @@ const REVIEW_SCHEMA_VERSION = 1;
 interface RootSession {
     readonly getSessionId: () => string;
     readonly expectedSessionId: string;
-    readonly model: ModelAvailability;
+    /** Current-model probe: reads the live model at each authorize call. */
+    readonly getModel: () => Model<any> | undefined;
+    readonly modelRegistry: ModelRegistry;
     readonly shutdown: AbortController;
     /** Opaque per-runtime identity for cohort segmentation. */
     readonly judgeRuntimeId: string;
@@ -181,10 +185,16 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                         return { kind: "defer" };
                     }
 
-                    // `captured.model` is the session-start snapshot. Config and
-                    // model-select support are deliberately outside this slice.
+                    // Per-request model capture (PIEXTENSIO-3 cat.3): an
+                    // in-request switch does not change an in-flight attempt;
+                    // a between-request switch affects the next attempt. The
+                    // probe reads the live current model here, not at start.
+                    const availability = createModelAvailability(
+                        captured.getModel(),
+                        captured.modelRegistry,
+                    );
                     const result = await requestStructuredVerdict(
-                        captured.model,
+                        availability,
                         evidence,
                         captured.shutdown.signal,
                         captured.config.timeoutMs,
@@ -266,7 +276,8 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
         root = {
             getSessionId: () => ctx.sessionManager.getSessionId(),
             expectedSessionId: sessionId,
-            model: createModelAvailability(ctx.model, ctx.modelRegistry),
+            getModel: () => ctx.model,
+            modelRegistry: ctx.modelRegistry,
             shutdown: new AbortController(),
             judgeRuntimeId: crypto.randomUUID(),
             config: loadJudgeConfig({ agentDir: getAgentDir() }),

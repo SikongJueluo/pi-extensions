@@ -145,6 +145,61 @@ afterEach(() => {
 });
 
 describe("AI judge lifecycle", () => {
+    it("captures the model per request: a between-request switch changes the next call", async () => {
+        let authorize: Authorizer["authorize"] | undefined;
+        const service = {
+            registerAuthorizer: vi.fn((_name, callback) => {
+                authorize = callback;
+                return vi.fn();
+            }),
+            checkPermission: vi.fn(),
+            getToolPermission: vi.fn(),
+        } as unknown as PermissionsService;
+        publishPermissionsService(service);
+        publishedService = service;
+
+        // A mutable "current model" the session switches mid-run.
+        let currentModel = {
+            id: "model-a",
+            provider: "test-provider",
+            api: "openai-codex-responses",
+        } as Model<any>;
+        const seen: string[] = [];
+        const complete = vi.fn(async (model: Model<any>) => {
+            seen.push(model.id);
+            return modelResponse();
+        });
+        const ctx = {
+            hasUI: true,
+            sessionManager: { getSessionId: () => "session-root" },
+            get model() {
+                return currentModel;
+            },
+            modelRegistry: { complete },
+            ui: { notify: vi.fn() },
+        } as unknown as ExtensionContext;
+
+        const harness = createFakePi();
+        extension(harness.pi);
+        harness.start(ctx);
+        harness.ready();
+
+        const log = {
+            review: vi.fn(),
+            debug: vi.fn(),
+        };
+        await authorize!(ask(), { checkPermission: vi.fn(), getToolPermission: vi.fn() }, log);
+        currentModel = {
+            id: "model-b",
+            provider: "test-provider",
+            api: "openai-codex-responses",
+        } as Model<any>;
+        await authorize!(ask(), { checkPermission: vi.fn(), getToolPermission: vi.fn() }, log);
+
+        expect(seen).toEqual(["model-a", "model-b"]);
+        harness.shutdown();
+    });
+
     it("calls the current model once, records metadata, and still defers in Shadow", async () => {
         let authorize: Authorizer["authorize"] | undefined;
         const dispose = vi.fn();
