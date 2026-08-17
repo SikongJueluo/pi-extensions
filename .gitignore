@@ -146,3 +146,6 @@ vite.config.ts.timestamp-*
 .workspace/
 .pi-subagents/
 .codegraph/
+
+# TUI replay diagnostic reports (regenerable via analyzer CLI + window bounds)
+docs/testing/rounds/
