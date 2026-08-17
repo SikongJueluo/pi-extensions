@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
@@ -15,6 +17,8 @@ import {
 } from "./model";
 import { PROMPT_VERSION, TOOL_SCHEMA_VERSION } from "./prompt";
 import { loadJudgeConfig, type EffectiveJudgeConfig } from "./config";
+import { createReviewSink, type ReviewSink } from "./review";
+import { evaluateEnforceAuthority, v01ProductionGateState } from "./judge";
 
 const LINK_NAME = "ai-bash-judge";
 const REVIEW_SCHEMA_VERSION = 1;
@@ -31,6 +35,8 @@ interface RootSession {
     /** Immutable effective-config snapshot captured at session start
      * (reload-only application: a config edit lands on the next session). */
     readonly config: EffectiveJudgeConfig;
+    /** Review-log toggle captured at session start (PIEXTENSIO-9 health). */
+    readonly reviewLogEnabled: boolean;
 }
 
 function reasonLength(reason: string): number {
@@ -92,6 +98,26 @@ function resultBase(
     };
 }
 
+
+/** Read the permission-system review-log toggle (default true when unset). */
+function readPermissionReviewLogEnabled(): boolean {
+    try {
+        const configPath = join(
+            getAgentDir(),
+            "extensions",
+            "pi-permission-system",
+            "config.json",
+        );
+        const parsed = JSON.parse(readFileSync(configPath, "utf-8")) as Record<
+            string,
+            unknown
+        >;
+        return parsed.permissionReviewLog !== false;
+    } catch {
+        return true;
+    }
+}
+
 /** Register a Shadow-only structured-output judge for local native Bash asks. */
 export default function permissionAiJudge(pi: ExtensionAPI): void {
     let root: RootSession | undefined;
@@ -112,6 +138,10 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
             LINK_NAME,
             async (details, _query, log) => {
                 const startedAt = Date.now();
+                const sink: ReviewSink = createReviewSink({
+                    log,
+                    reviewLogEnabled: captured.reviewLogEnabled,
+                });
                 try {
                     // Forwarded asks do not carry a structured child full
                     // command in permission-system 25.3/25.4. Never parse the
@@ -122,7 +152,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                         details.forwarding !== undefined ||
                         details.payload.kind === "forwarded"
                     ) {
-                        log.review("ai_bash_judge.result", {
+                        sink.review("ai_bash_judge.result", {
                             ...resultBase(
                                 captured.judgeRuntimeId,
                                 details,
@@ -149,7 +179,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                     if (
                         captured.getSessionId() !== captured.expectedSessionId
                     ) {
-                        log.review("ai_bash_judge.result", {
+                        sink.review("ai_bash_judge.result", {
                             ...resultBase(
                                 captured.judgeRuntimeId,
                                 details,
@@ -168,7 +198,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
 
                     const evidence = buildBashJudgmentEvidence(details);
                     if (evidence === undefined) {
-                        log.review("ai_bash_judge.result", {
+                        sink.review("ai_bash_judge.result", {
                             ...resultBase(
                                 captured.judgeRuntimeId,
                                 details,
@@ -201,7 +231,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                     );
 
                     if (result.kind === "judgment") {
-                        log.review("ai_bash_judge.result", {
+                        sink.review("ai_bash_judge.result", {
                             ...resultBase(
                                 captured.judgeRuntimeId,
                                 details,
@@ -227,7 +257,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                             evidenceQuality: evidenceQuality(true),
                         });
                     } else {
-                        log.review("ai_bash_judge.result", {
+                        sink.review("ai_bash_judge.result", {
                             ...resultBase(
                                 captured.judgeRuntimeId,
                                 details,
@@ -249,14 +279,26 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                         });
                     }
 
-                    // Bootstrap behavior is Shadow-only: the parsed prediction
-                    // is recorded but never changes permission authority.
-                    return { kind: "defer" };
+                    // Enforce truth table (PIEXTENSIO-3 cat.4 / M5): v0.1
+                    // production gates are structurally unreachable, so any
+                    // configured mode resolves to defer here. The call
+                    // exists so the truth table is the single authority
+                    // seam — a future slice flips the gate inputs, not the
+                    // callback's return path.
+                    const authority = evaluateEnforceAuthority(
+                        v01ProductionGateState(
+                            captured.config.mode,
+                            sink.health(),
+                        ),
+                    );
+                    return authority.kind === "allow"
+                        ? { kind: "allow" }
+                        : { kind: "defer" };
                 } catch {
                     // A link exception would abort the whole authority chain.
                     // Keep provider/payload/session failures fail-closed and do
                     // not include raw errors or authorization evidence in logs.
-                    log.debug("ai_bash_judge.exception");
+                    sink.debug("ai_bash_judge.exception");
                     return { kind: "defer" };
                 }
             },
@@ -281,6 +323,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
             shutdown: new AbortController(),
             judgeRuntimeId: crypto.randomUUID(),
             config: loadJudgeConfig({ agentDir: getAgentDir() }),
+            reviewLogEnabled: readPermissionReviewLogEnabled(),
         };
         for (const diagnostic of root.config.diagnostics) {
             ctx.ui.notify(
