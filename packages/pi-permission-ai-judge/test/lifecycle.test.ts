@@ -136,6 +136,20 @@ function modelResponse(): AssistantMessage {
     };
 }
 
+function fakeSessionManager(): {
+    getSessionId: () => string;
+    getEntries: () => unknown[];
+    getLeafId: () => string | null;
+    getCwd: () => string;
+} {
+    return {
+        getSessionId: () => "session-root",
+        getEntries: () => [],
+        getLeafId: () => null,
+        getCwd: () => "/repo",
+    };
+}
+
 let publishedService: PermissionsService | undefined;
 afterEach(() => {
     if (publishedService !== undefined) {
@@ -171,7 +185,7 @@ describe("AI judge lifecycle", () => {
         });
         const ctx = {
             hasUI: true,
-            sessionManager: { getSessionId: () => "session-root" },
+            sessionManager: fakeSessionManager(),
             get model() {
                 return currentModel;
             },
@@ -200,6 +214,76 @@ describe("AI judge lifecycle", () => {
         harness.shutdown();
     });
 
+    it("feeds conversation user text into the model prompt as quoted evidence", async () => {
+        let authorize: Authorizer["authorize"] | undefined;
+        const service = {
+            registerAuthorizer: vi.fn((_name, callback) => {
+                authorize = callback;
+                return vi.fn();
+            }),
+            checkPermission: vi.fn(),
+            getToolPermission: vi.fn(),
+        } as unknown as PermissionsService;
+        publishPermissionsService(service);
+        publishedService = service;
+
+        const complete = vi.fn(
+            async (
+                _model: Model<any>,
+                _context: Context,
+            ): Promise<AssistantMessage> => modelResponse(),
+        );
+        const sessionManager = fakeSessionManager();
+        (sessionManager as { getEntries: () => unknown[] }).getEntries = () => [
+            {
+                type: "message",
+                message: {
+                    role: "user",
+                    content: [{ type: "text", text: "please push the release tag" }],
+                },
+            },
+        ];
+        const ctx = {
+            hasUI: true,
+            sessionManager,
+            model: {
+                id: "test-model",
+                provider: "test-provider",
+                api: "openai-codex-responses",
+            } as Model<any>,
+            modelRegistry: { complete },
+            ui: { notify: vi.fn() },
+        } as unknown as ExtensionContext;
+
+        const harness = createFakePi();
+        extension(harness.pi);
+        harness.start(ctx);
+        harness.ready();
+
+        const log = {
+            review: vi.fn(),
+            debug: vi.fn(),
+        };
+        await authorize!(ask(), { checkPermission: vi.fn(), getToolPermission: vi.fn() }, log);
+
+        expect(complete).toHaveBeenCalledTimes(1);
+        const promptText = JSON.stringify(complete.mock.calls[0]?.[1]);
+        expect(promptText).toContain("please push the release tag");
+        expect(promptText).toContain("user_intent_evidence");
+        // The review row carries quality flags, not conversation content.
+        expect(JSON.stringify(log.review.mock.calls)).not.toContain(
+            "please push the release tag",
+        );
+        expect(log.review.mock.calls[0]?.[1]).toMatchObject({
+            evidenceQuality: expect.objectContaining({
+                explicitUserText: true,
+                conversationItems: 1,
+                requesterCwd: "/repo",
+            }),
+        });
+        harness.shutdown();
+    });
+
     it("calls the current model once, records metadata, and still defers in Shadow", async () => {
         let authorize: Authorizer["authorize"] | undefined;
         const dispose = vi.fn();
@@ -221,9 +305,7 @@ describe("AI judge lifecycle", () => {
                 _options?: Record<string, unknown>,
             ) => modelResponse(),
         );
-        const sessionManager = {
-            getSessionId: () => "session-root",
-        };
+        const sessionManager = fakeSessionManager();
         const model = {
             id: "test-model",
             provider: "test-provider",
@@ -265,7 +347,7 @@ describe("AI judge lifecycle", () => {
             maxRetries: 0,
             toolChoice: "required",
         });
-        expect(reviews).toEqual([
+        expect(reviews).toMatchObject([
             {
                 event: "ai_bash_judge.result",
                 details: expect.objectContaining({
@@ -273,7 +355,7 @@ describe("AI judge lifecycle", () => {
                     mode: "shadow",
                     origin: "local",
                     judgeRuntimeId: expect.any(String),
-                    promptVersion: "bash-shadow-v1",
+                    promptVersion: "bash-shadow-v2",
                     toolSchemaVersion: "report-verdict-v1",
                     judgeLatencyMs: expect.any(Number),
                     modelLatencyMs: expect.any(Number),
@@ -313,7 +395,7 @@ describe("AI judge lifecycle", () => {
         const complete = vi.fn();
         const ctx = {
             hasUI: true,
-            sessionManager: { getSessionId: () => "session-root" },
+            sessionManager: fakeSessionManager(),
             model: {
                 id: "test-model",
                 provider: "test-provider",
@@ -350,7 +432,7 @@ describe("AI judge lifecycle", () => {
 
         expect(verdict).toEqual({ kind: "defer" });
         expect(complete).not.toHaveBeenCalled();
-        expect(reviews).toEqual([
+        expect(reviews).toMatchObject([
             {
                 event: "ai_bash_judge.result",
                 details: expect.objectContaining({

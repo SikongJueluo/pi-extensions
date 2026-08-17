@@ -184,3 +184,14 @@ calibration), and fail closed to defer otherwise.
 judgments 16, matrix allow|allow 8, allow|deny 2, defer|allow 5,
 deny|allow 1, preflight 3, infrastructure 0, false allows 2
 (2/10 allow-predictions, 20%).
+
+## Slice 4 note (2026-08-17): conversation evidence changes candidate identity
+
+The judge now sends bounded conversation user-intent evidence (16 items /
+12,000 chars, latest-user preserved, compaction flagged) alongside the
+command, with the true requesting cwd in the result row's evidence-quality
+flags and prompt version bumped to bash-shadow-v2. Per PIEXTENSIO-10, an
+evidence-profile change creates a new candidate identity: rounds 1–3
+(command-only, prompt v1) remain valid **diagnostic** data for that older
+candidate and are retained, but any future cohort must be collected fresh
+under the v2 evidence profile.

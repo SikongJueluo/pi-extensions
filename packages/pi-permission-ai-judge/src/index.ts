@@ -18,6 +18,11 @@ import {
 import { PROMPT_VERSION, TOOL_SCHEMA_VERSION } from "./prompt";
 import { loadJudgeConfig, type EffectiveJudgeConfig } from "./config";
 import { createReviewSink, type ReviewSink } from "./review";
+import {
+    buildConversationEvidence,
+    conversationProbeFromSession,
+    type ConversationEvidence,
+} from "./conversation";
 import { evaluateEnforceAuthority, v01ProductionGateState } from "./judge";
 
 const LINK_NAME = "ai-bash-judge";
@@ -37,7 +42,18 @@ interface RootSession {
     readonly config: EffectiveJudgeConfig;
     /** Review-log toggle captured at session start (PIEXTENSIO-9 health). */
     readonly reviewLogEnabled: boolean;
+    /** Serving-session conversation seam (compaction-aware active branch). */
+    readonly conversation: ReturnType<typeof conversationProbeFromSession>;
+    /** Requesting-session cwd for relative-path meaning. */
+    readonly getCwd: () => string;
 }
+
+const EMPTY_CONVERSATION: ConversationEvidence = {
+    items: [],
+    hasCompaction: false,
+    truncated: false,
+    renderedChars: 0,
+};
 
 function reasonLength(reason: string): number {
     return [...reason].length;
@@ -53,18 +69,20 @@ function reasonLength(reason: string): number {
  */
 function evidenceQuality(
     structuredFullInput: boolean,
+    conversation: ConversationEvidence,
+    requesterCwd: string,
     forwardedProvenance: boolean | null = null,
 ): Record<string, unknown> {
     return {
         structuredFullInput,
         legacyMessage: false,
-        requesterCwd: null,
-        explicitUserText: false,
+        requesterCwd,
+        explicitUserText: conversation.items.length > 0,
         forwardedProvenance,
-        conversationItems: null,
-        conversationChars: null,
-        truncated: false,
-        latestUserPreserved: null,
+        conversationItems: conversation.items.length,
+        conversationChars: conversation.renderedChars,
+        truncated: conversation.truncated,
+        latestUserPreserved: conversation.items.length > 0,
     };
 }
 
@@ -164,7 +182,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                             effectiveVerdict: "defer",
                             modelCalled: false,
                             code: "missing_structured_input",
-                            evidenceQuality: evidenceQuality(false, false),
+                            evidenceQuality: evidenceQuality(false, EMPTY_CONVERSATION, "", false),
                         });
                         return { kind: "defer" };
                     }
@@ -191,7 +209,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                             effectiveVerdict: "defer",
                             modelCalled: false,
                             code: "session_ownership_unproven",
-                            evidenceQuality: evidenceQuality(false),
+                            evidenceQuality: evidenceQuality(false, EMPTY_CONVERSATION, ""),
                         });
                         return { kind: "defer" };
                     }
@@ -210,7 +228,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                             effectiveVerdict: "defer",
                             modelCalled: false,
                             code: "invalid_evidence",
-                            evidenceQuality: evidenceQuality(false),
+                            evidenceQuality: evidenceQuality(false, EMPTY_CONVERSATION, ""),
                         });
                         return { kind: "defer" };
                     }
@@ -223,11 +241,17 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                         captured.getModel(),
                         captured.modelRegistry,
                     );
+                    // Conversation evidence is captured at ask time from the
+                    // live serving branch, not at session start: the newest
+                    // user intent is the ask's intent.
+                    const conversation: ConversationEvidence =
+                        buildConversationEvidence(captured.conversation);
                     const result = await requestStructuredVerdict(
                         availability,
                         evidence,
                         captured.shutdown.signal,
                         captured.config.timeoutMs,
+                        conversation,
                     );
 
                     if (result.kind === "judgment") {
@@ -254,7 +278,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                             outputUsage: result.outputTokens,
                             modelLatencyMs: result.modelLatencyMs,
                             reasonLength: reasonLength(result.reason),
-                            evidenceQuality: evidenceQuality(true),
+                            evidenceQuality: evidenceQuality(true, conversation, captured.getCwd()),
                         });
                     } else {
                         sink.review("ai_bash_judge.result", {
@@ -275,7 +299,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                             inputUsage: result.inputTokens ?? null,
                             outputUsage: result.outputTokens ?? null,
                             modelLatencyMs: result.modelLatencyMs,
-                            evidenceQuality: evidenceQuality(true),
+                            evidenceQuality: evidenceQuality(true, conversation, captured.getCwd()),
                         });
                     }
 
@@ -324,6 +348,8 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
             judgeRuntimeId: crypto.randomUUID(),
             config: loadJudgeConfig({ agentDir: getAgentDir() }),
             reviewLogEnabled: readPermissionReviewLogEnabled(),
+            conversation: conversationProbeFromSession(ctx.sessionManager),
+            getCwd: () => ctx.sessionManager.getCwd(),
         };
         for (const diagnostic of root.config.diagnostics) {
             ctx.ui.notify(
