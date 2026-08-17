@@ -14,12 +14,12 @@
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
-    "@gotgenes/pi-permission-system": ">=25.3.0"
+    "@gotgenes/pi-permission-system": ">=25.4.0"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
-    "@gotgenes/pi-permission-system": ">=25.3.0",
+    "@gotgenes/pi-permission-system": ">=25.4.0",
     "@types/node": "^26.0.0",
     "typescript": "^5",
     "vitest": "^3"

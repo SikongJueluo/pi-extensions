@@ -12,7 +12,7 @@
     ]
   },
   "dependencies": {
-    "@gotgenes/pi-permission-system": ">=25.3.0"
+    "@gotgenes/pi-permission-system": "^25.4.0"
   },
   "bundledDependencies": [
     "@gotgenes/pi-permission-system"

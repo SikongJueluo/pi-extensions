@@ -8,7 +8,7 @@
   "type": "module",
   "private": true,
   "dependencies": {
-    "@gotgenes/pi-permission-system": "^25.3.0"
+    "@gotgenes/pi-permission-system": "^25.4.0"
   },
   "pi": {
     "extensions": [
