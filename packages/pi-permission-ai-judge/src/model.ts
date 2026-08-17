@@ -7,13 +7,16 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { buildJudgeContext, MAX_REASON_CODE_POINTS, REPORT_VERDICT_TOOL_NAME } from "./prompt";
 import type { BashJudgmentEvidence } from "./evidence";
 
-// 60s: glm-5.2 at the user's default `thinking: high` profile was observed
-// both finishing in seconds and racing the former 15s deadline (one verdict
-// landed at exactly 15.003s and was mislabeled `aborted`); high-variance
-// reasoning latency needs the wider bound. The judge is the first chain
-// link, so its wait delays the human prompt by at most this much.
-// PIEXTENSIO-11 calibrates a final value from cohort data.
-const DEFAULT_TIMEOUT_MS = 60_000;
+// 15s is the PIEXTENSIO-11 calibrated default (canonical resolution c0b0028d):
+// 15,000 ms total wall-clock deadline, accepted config range 5,000–30,000 ms,
+// invalid values fail closed to this default. The judge is the first chain
+// link, so its wait delays the human prompt by at most this much. Uncalibrated
+// provider segments (e.g. zai glm-5.2, observed racing the deadline at
+// `thinking: high`) should configure a non-default timeoutMs within the range
+// and be treated as a distinct configuration cohort.
+const DEFAULT_TIMEOUT_MS = 15_000;
+export const MIN_TIMEOUT_MS = 5_000;
+export const MAX_TIMEOUT_MS = 30_000;
 // Reasoning-token aware cap. Providers that bill chain-of-thought inside
 // completion tokens (observed on zai glm-5.2 despite `thinking: disabled`:
 // 669 reasoning + 70 output for one verdict) exhausted a 256-token budget

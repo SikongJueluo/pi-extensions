@@ -168,12 +168,17 @@ statistical framing: single verdicts are not oracles, only cohort rates
 are meaningful.
 
 **PIEXTENSIO-11 latency evidence (16 judgments across the three fixed
-windows):** p50 4.2s, mean 4.9s, max 11.9s. The 60s timeout budget has
-~5x headroom over the observed max; no timeout or infrastructure
-failure occurred in any round. Verdict: the 60s default is safe;
-tightening toward ~30s would still bound worst-case waits with ~2.5x
-headroom, but calibration-grade tightening should wait for more
-samples across providers.
+windows):** p50 4.2s, mean 4.9s, max 11.9s, zero timeouts or
+infrastructure failures. The canonical resolution (c0b0028d) fixes
+15,000 ms as the default and 5,000–30,000 ms as the accepted config
+range, calibrated on openai-codex/gpt-5.6-sol (p95 6.4s). The zai
+glm-5.2 segment these rounds observed is **uncalibrated** under that
+contract: it raced the 15s deadline twice at `thinking: high` before
+the cohort and stayed within max 11.9s under the interim 60s bound.
+Protocol for this segment: configure timeoutMs within the accepted
+range (30s) via the config module, run as a distinct configuration
+cohort (non-default timeout never inherits the default cohort's
+calibration), and fail closed to defer otherwise.
 
 **Cohort totals (3 rounds, fixed windows):** N=19, joined 19/19,
 judgments 16, matrix allow|allow 8, allow|deny 2, defer|allow 5,
