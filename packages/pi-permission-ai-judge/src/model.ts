@@ -7,7 +7,13 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { buildJudgeContext, MAX_REASON_CODE_POINTS, REPORT_VERDICT_TOOL_NAME } from "./prompt";
 import type { BashJudgmentEvidence } from "./evidence";
 
-const DEFAULT_TIMEOUT_MS = 15_000;
+// 60s: glm-5.2 at the user's default `thinking: high` profile was observed
+// both finishing in seconds and racing the former 15s deadline (one verdict
+// landed at exactly 15.003s and was mislabeled `aborted`); high-variance
+// reasoning latency needs the wider bound. The judge is the first chain
+// link, so its wait delays the human prompt by at most this much.
+// PIEXTENSIO-11 calibrates a final value from cohort data.
+const DEFAULT_TIMEOUT_MS = 60_000;
 // Reasoning-token aware cap. Providers that bill chain-of-thought inside
 // completion tokens (observed on zai glm-5.2 despite `thinking: disabled`:
 // 669 reasoning + 70 output for one verdict) exhausted a 256-token budget
@@ -203,11 +209,18 @@ export async function requestStructuredVerdict(
             requestController.signal,
         );
 
-        if (shutdownSignal.aborted || response.stopReason === "aborted") {
+        if (shutdownSignal.aborted) {
             return failure("aborted");
         }
+        // Check timeout before the provider's abort stopReason: a provider
+        // returning `aborted` after our own deadline hit is a timeout, not a
+        // session-shutdown abort. Mislabeling it starves PIEXTENSIO-11's
+        // timeout calibration of exactly the rows it needs.
         if (timeoutController.signal.aborted) {
             return failure("timeout");
+        }
+        if (response.stopReason === "aborted") {
+            return failure("aborted");
         }
         if (response.stopReason === "error") {
             return failure("model_error");

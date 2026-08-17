@@ -14,6 +14,7 @@ const metadata = {
 function response(
     content: AssistantMessage["content"],
     output = 12,
+    stopReason: AssistantMessage["stopReason"] = "toolUse",
 ): AssistantMessage {
     return {
         role: "assistant",
@@ -21,6 +22,7 @@ function response(
         api: metadata.api,
         provider: metadata.provider,
         model: metadata.model,
+        stopReason,
         usage: {
             input: 10,
             output,
@@ -35,7 +37,6 @@ function response(
                 total: 0,
             },
         },
-        stopReason: "toolUse",
         timestamp: Date.now(),
     };
 }
@@ -296,5 +297,25 @@ describe("requestStructuredVerdict", () => {
             modelCalled: false,
         });
         expect(complete).not.toHaveBeenCalled();
+    });
+
+    it("classifies a provider abort arriving after the deadline as timeout", async () => {
+        const complete = vi.fn(
+            (_context: Context, signal: AbortSignal) =>
+                new Promise<AssistantMessage>((resolve, reject) => {
+                    signal.addEventListener("abort", () =>
+                        // Provider surfaces the client abort as an `aborted`
+                        // stopReason after our 1ms deadline already fired.
+                        resolve(response([], 12, "aborted")),
+                    );
+                }),
+        );
+        const timedOut = await requestStructuredVerdict(
+            ready(complete as never),
+            evidence,
+            new AbortController().signal,
+            1,
+        );
+        expect(timedOut).toMatchObject({ code: "timeout" });
     });
 });
