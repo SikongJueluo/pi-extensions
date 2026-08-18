@@ -26,7 +26,9 @@ describe("buildJudgeContext", () => {
             fullCommand: `cd /repo && ${command}`,
             triggeringUnit: command,
         });
-        const message = context.messages[0];
+        // The real evidence message is the last user message, after the
+        // few-shot examples (prompt v3).
+        const message = context.messages.at(-1);
         expect(message?.role).toBe("user");
         const text =
             message?.role === "user" && Array.isArray(message.content)

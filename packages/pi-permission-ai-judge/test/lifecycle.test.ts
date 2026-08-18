@@ -1,4 +1,37 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Hermetic agent dir: index.ts reads config and writes the audit log via
+// getAgentDir(); point both at a temp dir so lifecycle tests neither read
+// the operator's real config nor pollute the real audit record (ADR 0006).
+const { mockAgentDir, createMockAgentDir, cleanupMockAgentDir } = vi.hoisted(() => {
+    const state = { dir: "" };
+    return {
+        mockAgentDir: state,
+        createMockAgentDir: () => {
+            state.dir = mkdtempSync(join(tmpdir(), "ai-judge-lifecycle-"));
+        },
+        cleanupMockAgentDir: () => {
+            if (state.dir) {
+                rmSync(state.dir, { recursive: true, force: true });
+                state.dir = "";
+            }
+        },
+    };
+});
+
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
+    const actual =
+        await importOriginal<
+            typeof import("@earendil-works/pi-coding-agent")
+        >();
+    return {
+        ...actual,
+        getAgentDir: () => mockAgentDir.dir || "/nonexistent-ai-judge-test",
+    };
+});
 import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
 import type {
     ExtensionAPI,
@@ -156,9 +189,14 @@ afterEach(() => {
         unpublishPermissionsService(publishedService);
         publishedService = undefined;
     }
+    cleanupMockAgentDir();
 });
 
 describe("AI judge lifecycle", () => {
+    beforeEach(() => {
+        createMockAgentDir();
+    });
+
     it("captures the model per request: a between-request switch changes the next call", async () => {
         let authorize: Authorizer["authorize"] | undefined;
         const service = {
@@ -211,6 +249,33 @@ describe("AI judge lifecycle", () => {
         await authorize!(ask(), { checkPermission: vi.fn(), getToolPermission: vi.fn() }, log);
 
         expect(seen).toEqual(["model-a", "model-b"]);
+
+        // ADR 0006: the Judge-owned audit log mirrors every result and
+        // records enrollment (denominator), in the hermetic agent dir.
+        const auditText = readFileSync(
+            join(
+                mockAgentDir.dir,
+                "extensions",
+                "pi-permission-ai-judge",
+                "logs",
+                "audit.jsonl",
+            ),
+            "utf-8",
+        );
+        const auditRows = auditText
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line) as Record<string, unknown>);
+        expect(auditRows).toHaveLength(4); // enrolled+result × 2 asks
+        expect(auditRows.filter((r) => r.event === "ai_bash_judge.enrolled"))
+            .toHaveLength(2);
+        expect(auditRows.filter((r) => r.event === "ai_bash_judge.result"))
+            .toHaveLength(2);
+        expect(
+            auditRows.every(
+                (r) => r.judgeRuntimeId === auditRows[0].judgeRuntimeId,
+            ),
+        ).toBe(true);
         harness.shutdown();
     });
 
@@ -355,7 +420,7 @@ describe("AI judge lifecycle", () => {
                     mode: "shadow",
                     origin: "local",
                     judgeRuntimeId: expect.any(String),
-                    promptVersion: "bash-shadow-v2",
+                    promptVersion: "bash-shadow-v3",
                     toolSchemaVersion: "report-verdict-v1",
                     judgeLatencyMs: expect.any(Number),
                     modelLatencyMs: expect.any(Number),
