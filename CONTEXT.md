@@ -5,6 +5,22 @@ extensions that inspect and re-evaluate Bash commands before they are allowed.
 
 ## Language
 
+### Authority
+
+**Enforce authority**:
+Allow-only delegation — when the Judge's verdict is `allow` and every gate in
+the Enforce truth table passes, the command runs without the human dialog. The
+Judge can never answer `deny` with authority; every uncertain case (defer,
+deny, preflight, infrastructure failure) falls back to the human dialog.
+_Avoid_: AI takeover, auto-deny, full delegation
+
+**Audit log (Judge-owned)**:
+The Enforce-era accountability record written by the Judge package itself —
+separate file from the permission-system review log, append + fsync per
+record, self-checked for health; an unhealthy audit log refuses authority.
+_Avoid_: host contract (dropped — see ADR 0006), acknowledged write (upstream
+sense)
+
 ### Wrappers
 
 **Wrapper**:
