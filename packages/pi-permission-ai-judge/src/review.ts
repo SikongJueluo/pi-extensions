@@ -58,7 +58,7 @@ export interface ReviewSinkDeps {
 }
 
 /** Strip forbidden keys defensively; a metadata-only event never carries them. */
-function stripForbiddenKeys(
+export function stripForbiddenKeys(
     details: Record<string, unknown>,
 ): Record<string, unknown> {
     const clean: Record<string, unknown> = {};

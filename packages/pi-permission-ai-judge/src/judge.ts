@@ -12,8 +12,8 @@ import type { TelemetryHealth } from "./review";
  */
 
 export type EnforceGateState = {
-    /** Host contract present (permission-system host version/seams). */
-    readonly hostContractPresent: boolean;
+    /** The Judge-owned audit log is healthy (ADR 0006 self-check gate). */
+    readonly auditHealthy: boolean;
     /** Runtime telemetry healthy at decision time. */
     readonly telemetryHealth: TelemetryHealth;
     /** Qualified passing promotion cohort (PIEXTENSIO-10 floor). */
@@ -47,8 +47,8 @@ export function evaluateEnforceAuthority(
     if (state.mode !== "enforce") {
         return { kind: "defer", blockedBy: "mode_shadow" };
     }
-    if (!state.hostContractPresent) {
-        return { kind: "defer", blockedBy: "host_contract_absent" };
+    if (!state.auditHealthy) {
+        return { kind: "defer", blockedBy: "audit_unhealthy" };
     }
     if (state.telemetryHealth !== "healthy") {
         return { kind: "defer", blockedBy: `telemetry_${state.telemetryHealth}` };
@@ -79,16 +79,19 @@ export function evaluateEnforceAuthority(
 
 /**
  * The v0.1 production gate state: the promotion gates are structurally
- * unreachable until the upstream seams exist, so `enforce` defers here
- * regardless of configuration. The full truth table above is exercised
- * through injected fake gate states in tests only.
+ * unreachable until the owner records a qualifying cohort, approval, and
+ * activation (ADR 0006: recorded Judge-side, not via a host contract),
+ * so `enforce` defers here regardless of configuration. The full truth
+ * table above is exercised through injected fake gate states in tests
+ * only.
  */
 export function v01ProductionGateState(
     mode: "shadow" | "enforce",
     telemetryHealth: TelemetryHealth,
+    auditHealthy = true,
 ): EnforceGateState {
     return {
-        hostContractPresent: true,
+        auditHealthy,
         telemetryHealth,
         cohortQualified: false,
         ownerApprovalRecorded: false,

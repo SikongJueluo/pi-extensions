@@ -18,6 +18,7 @@ import {
 import { PROMPT_VERSION, TOOL_SCHEMA_VERSION } from "./prompt";
 import { loadJudgeConfig, type EffectiveJudgeConfig } from "./config";
 import { createReviewSink, type ReviewSink } from "./review";
+import { createAuditLog, type AuditLog } from "./audit";
 import {
     buildConversationEvidence,
     conversationProbeFromSession,
@@ -46,6 +47,8 @@ interface RootSession {
     readonly conversation: ReturnType<typeof conversationProbeFromSession>;
     /** Requesting-session cwd for relative-path meaning. */
     readonly getCwd: () => string;
+    /** Judge-owned audit log (ADR 0006); unhealthy refuses Enforce authority. */
+    readonly auditLog: AuditLog;
 }
 
 const EMPTY_CONVERSATION: ConversationEvidence = {
@@ -161,6 +164,34 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                     reviewLogEnabled: captured.reviewLogEnabled,
                 });
                 try {
+                    // Judge-owned enrollment record (ADR 0006 denominator:
+                    // asks the Judge received, per its own audit log).
+                    // Non-bash surfaces are ignored below without a shadow
+                    // row; they also do not enroll (v0.1 cohort is bash-only).
+                    if (
+                        details.forwarding !== undefined ||
+                        details.payload.kind === "forwarded" ||
+                        details.payload.kind === "bash"
+                    ) {
+                        captured.auditLog.audit("ai_bash_judge.enrolled", {
+                            requestId: details.requestId,
+                            origin:
+                                details.forwarding !== undefined ||
+                                    details.payload.kind === "forwarded"
+                                    ? "forwarded"
+                                    : "local",
+                            surface: "bash",
+                            command:
+                                details.payload.kind === "bash" &&
+                                    details.payload.request?.value
+                                    ? details.payload.request.value
+                                    : (details.command ?? null),
+                        });
+                    }
+                    const emitResult = (record: Record<string, unknown>): void => {
+                        sink.review("ai_bash_judge.result", record);
+                        captured.auditLog.audit("ai_bash_judge.result", record);
+                    };
                     // Forwarded asks do not carry a structured child full
                     // command in permission-system 25.3/25.4. Never parse the
                     // legacy prose. The deferral is recorded so the request
@@ -170,7 +201,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                         details.forwarding !== undefined ||
                         details.payload.kind === "forwarded"
                     ) {
-                        sink.review("ai_bash_judge.result", {
+                        emitResult({
                             ...resultBase(
                                 captured.judgeRuntimeId,
                                 details,
@@ -197,7 +228,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                     if (
                         captured.getSessionId() !== captured.expectedSessionId
                     ) {
-                        sink.review("ai_bash_judge.result", {
+                        emitResult({
                             ...resultBase(
                                 captured.judgeRuntimeId,
                                 details,
@@ -216,7 +247,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
 
                     const evidence = buildBashJudgmentEvidence(details);
                     if (evidence === undefined) {
-                        sink.review("ai_bash_judge.result", {
+                        emitResult({
                             ...resultBase(
                                 captured.judgeRuntimeId,
                                 details,
@@ -255,7 +286,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                     );
 
                     if (result.kind === "judgment") {
-                        sink.review("ai_bash_judge.result", {
+                        emitResult({
                             ...resultBase(
                                 captured.judgeRuntimeId,
                                 details,
@@ -281,7 +312,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                             evidenceQuality: evidenceQuality(true, conversation, captured.getCwd()),
                         });
                     } else {
-                        sink.review("ai_bash_judge.result", {
+                        emitResult({
                             ...resultBase(
                                 captured.judgeRuntimeId,
                                 details,
@@ -313,6 +344,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                         v01ProductionGateState(
                             captured.config.mode,
                             sink.health(),
+                            captured.auditLog.healthy(),
                         ),
                     );
                     return authority.kind === "allow"
@@ -339,15 +371,20 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
             return;
         }
 
+        const runtimeId = crypto.randomUUID();
         root = {
             getSessionId: () => ctx.sessionManager.getSessionId(),
             expectedSessionId: sessionId,
             getModel: () => ctx.model,
             modelRegistry: ctx.modelRegistry,
             shutdown: new AbortController(),
-            judgeRuntimeId: crypto.randomUUID(),
+            judgeRuntimeId: runtimeId,
             config: loadJudgeConfig({ agentDir: getAgentDir() }),
             reviewLogEnabled: readPermissionReviewLogEnabled(),
+            auditLog: createAuditLog({
+                agentDir: getAgentDir(),
+                runtimeId,
+            }),
             conversation: conversationProbeFromSession(ctx.sessionManager),
             getCwd: () => ctx.sessionManager.getCwd(),
         };

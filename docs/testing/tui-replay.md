@@ -122,7 +122,21 @@ report.
 
 ## 5. Log contract (pairing keys)
 
-Event order per request, keyed by `requestId`:
+**Two logs exist since ADR 0006** (Judge-owned audit + permission review):
+
+1. **Judge audit log** `~/.pi/agent/extensions/pi-permission-ai-judge/logs/audit.jsonl`
+   — judge-owned events only: `ai_bash_judge.enrolled` (ask received:
+   requestId, origin, surface, command — the cohort denominator) and a
+   mirror of every `ai_bash_judge.result` row. Append + fsync per record;
+   write failure is sticky-unhealthy and refuses Enforce authority.
+2. **Permission review log** (below) — still the source for human-decision
+   attribution and upstream chain events.
+
+The analyzer takes enrollments from the audit log via `--audit <path>`
+(dual-log mode); without the flag it reconstructs enrollment from the
+review log as before.
+
+Event order per request in the review log, keyed by `requestId`:
 
 ```
 permission_request.waiting

@@ -6,7 +6,7 @@ import {
 } from "../src/judge";
 
 const ALL_OPEN: EnforceGateState = {
-    hostContractPresent: true,
+    auditHealthy: true,
     telemetryHealth: "healthy",
     cohortQualified: true,
     ownerApprovalRecorded: true,
@@ -29,7 +29,7 @@ describe("evaluateEnforceAuthority — every gate independently forces defer", (
         expectedReason: string;
     }> = [
         { name: "shadow mode", patch: { mode: "shadow" }, expectedReason: "mode_shadow" },
-        { name: "host contract absent", patch: { hostContractPresent: false }, expectedReason: "host_contract_absent" },
+        { name: "audit log unhealthy", patch: { auditHealthy: false }, expectedReason: "audit_unhealthy" },
         { name: "telemetry disabled", patch: { telemetryHealth: "disabled" }, expectedReason: "telemetry_disabled" },
         { name: "telemetry write failed", patch: { telemetryHealth: "write_failed" }, expectedReason: "telemetry_write_failed" },
         { name: "telemetry integrity anomaly", patch: { telemetryHealth: "integrity_anomaly" }, expectedReason: "telemetry_integrity_anomaly" },
@@ -69,10 +69,17 @@ describe("evaluateEnforceAuthority — v0.1 production state", () => {
         }
     });
 
-    it("blocks v0.1 enforce on the cohort gate", () => {
+    it("blocks v0.1 enforce on the cohort gate even with healthy audit", () => {
         const outcome = evaluateEnforceAuthority(
-            v01ProductionGateState("enforce", "healthy"),
+            v01ProductionGateState("enforce", "healthy", true),
         );
         expect(outcome).toEqual({ kind: "defer", blockedBy: "cohort_not_qualified" });
+    });
+
+    it("blocks v0.1 enforce on the audit gate when the audit log is unhealthy", () => {
+        const outcome = evaluateEnforceAuthority(
+            v01ProductionGateState("enforce", "healthy", false),
+        );
+        expect(outcome).toEqual({ kind: "defer", blockedBy: "audit_unhealthy" });
     });
 });

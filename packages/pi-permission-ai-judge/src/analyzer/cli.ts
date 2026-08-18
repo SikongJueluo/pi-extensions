@@ -15,6 +15,10 @@ const USAGE = `usage: analyze-shadow <review-jsonl-path> [options]
 options:
   --after <iso8601>   only consider events with timestamp >= this instant
   --before <iso8601>  only consider events with timestamp <= this instant
+  --audit <path>      Judge-owned audit JSONL (ADR 0006); enrollment (the
+                      denominator N) is then taken from its
+                      ai_bash_judge.enrolled rows instead of the reconstructed
+                      permission-system chain events
   --help              show this help
 
 The report is diagnostic-grade: the join reconstructs enrollment and human
@@ -25,6 +29,7 @@ interface CliOptions {
     readonly path: string;
     readonly after: Date | null;
     readonly before: Date | null;
+    readonly audit: string | null;
 }
 
 function parseArgs(argv: readonly string[]): CliOptions | { error: string } {
@@ -32,15 +37,21 @@ function parseArgs(argv: readonly string[]): CliOptions | { error: string } {
     let path: string | undefined;
     let after: Date | null = null;
     let before: Date | null = null;
+    let audit: string | null = null;
     for (let i = 0; i < args.length; i += 1) {
         const arg = args[i] as string;
         if (arg === "--help" || arg === "-h") {
             return { error: USAGE };
         }
-        if (arg === "--after" || arg === "--before") {
+        if (arg === "--after" || arg === "--before" || arg === "--audit") {
             const value = args[i + 1];
             if (value === undefined) {
-                return { error: `${arg} requires an ISO-8601 timestamp` };
+                return { error: `${arg} requires a value` };
+            }
+            if (arg === "--audit") {
+                audit = value;
+                i += 1;
+                continue;
             }
             const parsed = new Date(value);
             if (Number.isNaN(parsed.getTime())) {
@@ -65,7 +76,7 @@ function parseArgs(argv: readonly string[]): CliOptions | { error: string } {
     if (path === undefined) {
         return { error: "missing input path" };
     }
-    return { path, after, before };
+    return { path, after, before, audit };
 }
 
 function parseLine(line: string, lineNo: number): ReviewEvent | null {
@@ -137,13 +148,63 @@ function main(): void {
             return true;
         });
 
-    const { enrollments, metrics } = analyzeShadowReviewLog(events);
+    // ADR 0006 dual-log mode: with --audit, the denominator comes from the
+    // Judge's own enrolled rows (asks it received), and the reconstructed
+    // permission-system enrollment proxy is dropped to avoid a second
+    // denominator source. Human decisions still come from the permission
+    // log (attribution join).
+    let joined = events;
+    if (parsed.audit !== null) {
+        let auditRaw: string;
+        try {
+            auditRaw = readFileSync(parsed.audit, "utf-8");
+        } catch (error) {
+            process.stderr.write(
+                `error: cannot read audit log ${parsed.audit}: ${error instanceof Error ? error.message : String(error)}\n`,
+            );
+            process.exit(1);
+        }
+        const auditEnrolled = auditRaw
+            .split("\n")
+            .map((line, index) => parseLine(line, index + 1))
+            .filter((evt): evt is ReviewEvent => evt !== null)
+            .filter((evt) => evt.event === "ai_bash_judge.enrolled")
+            .filter((evt) => {
+                const ts = typeof evt.timestamp === "string" ? evt.timestamp : null;
+                if (ts === null) {
+                    return true;
+                }
+                const time = new Date(ts).getTime();
+                if (parsed.after !== null && !Number.isNaN(time) && time < parsed.after.getTime()) {
+                    return false;
+                }
+                if (parsed.before !== null && !Number.isNaN(time) && time > parsed.before.getTime()) {
+                    return false;
+                }
+                return true;
+            })
+            .map((evt) => ({
+                ...evt,
+                event: "authorizer_chain_resolved",
+                links: ["ai-bash-judge"],
+            }) as ReviewEvent);
+        joined = [
+            ...events.filter((evt) => evt.event !== "authorizer_chain_resolved"),
+            ...auditEnrolled,
+        ];
+    }
+
+    const { enrollments, metrics } = analyzeShadowReviewLog(joined);
     const out = process.stdout;
 
     out.write("AI Bash Judge — Shadow diagnostic report\n");
     out.write("grade: DIAGNOSTIC (reconstructed join; not promotion-grade)\n");
     out.write(`asOf: ${new Date().toISOString()}\n`);
-    out.write(`source: ${parsed.path}\n\n`);
+    out.write(`source: ${parsed.path}\n`);
+    if (parsed.audit !== null) {
+        out.write(`audit: ${parsed.audit} (enrollment source, ADR 0006)\n`);
+    }
+    out.write("\n");
 
     out.write(`enrollments (N): ${enrollments}\n`);
     out.write(`joined rows: ${metrics.joined}\n`);
