@@ -420,7 +420,7 @@ describe("AI judge lifecycle", () => {
                     mode: "shadow",
                     origin: "local",
                     judgeRuntimeId: expect.any(String),
-                    promptVersion: "bash-shadow-v3",
+                    promptVersion: "bash-shadow-v4",
                     toolSchemaVersion: "report-verdict-v1",
                     judgeLatencyMs: expect.any(Number),
                     modelLatencyMs: expect.any(Number),

@@ -21,6 +21,18 @@ record, self-checked for health; an unhealthy audit log refuses authority.
 _Avoid_: host contract (dropped — see ADR 0006), acknowledged write (upstream
 sense)
 
+**Irreversibility boundary**:
+An allow verdict requires every operation's effects to be recoverable —
+reversible, or reproducible from the repository or the evidence at hand.
+An operation that destroys data which cannot be re-created or undone
+(unscoped untracked/ignored deletion, discarding uncommitted work,
+rewriting published history) always defers to the human dialog, no matter
+how specifically the user requested it; sensitivity alone (e.g. credential
+refresh) is not irreversibility. Explicit intent grants allow authority
+only over recoverable effects.
+_Avoid_: destructive-but-requested allow (v3 sense — see ADR 0007),
+risk-based deny
+
 ### Wrappers
 
 **Wrapper**:
