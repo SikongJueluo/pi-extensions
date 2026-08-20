@@ -24,7 +24,16 @@ import {
     conversationProbeFromSession,
     type ConversationEvidence,
 } from "./conversation";
-import { evaluateEnforceAuthority, v01ProductionGateState } from "./judge";
+import {
+    evaluateEnforceAuthority,
+    type EnforceGateState,
+} from "./judge";
+import {
+    loadPromotionRecords,
+    resolvePromotionGates,
+    type CandidateIdentity,
+    type PromotionRecordsSnapshot,
+} from "./promotion";
 
 const LINK_NAME = "ai-bash-judge";
 const REVIEW_SCHEMA_VERSION = 1;
@@ -49,6 +58,15 @@ interface RootSession {
     readonly getCwd: () => string;
     /** Judge-owned audit log (ADR 0006); unhealthy refuses Enforce authority. */
     readonly auditLog: AuditLog;
+    /** Promotion-records snapshot loaded at session start (PIEXTENSIO-21);
+     * gates are resolved per ask against the live candidate identity. */
+    readonly promotionRecords: PromotionRecordsSnapshot;
+    /** Static candidate-identity fields (everything except the model
+     * segment, which is captured per ask). */
+    readonly identityBase: Omit<
+        CandidateIdentity,
+        "provider" | "model" | "api"
+    >;
 }
 
 const EMPTY_CONVERSATION: ConversationEvidence = {
@@ -285,6 +303,52 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                         conversation,
                     );
 
+                    // Enforce truth table (PIEXTENSIO-3 cat.4 / M5): the
+                    // promotion gates resolve per ask from the session-start
+                    // records snapshot against the live candidate identity
+                    // (PIEXTENSIO-21) — the current model segment is part of
+                    // that identity, so a mid-session model switch cannot
+                    // inherit another segment's records, and identity drift
+                    // after recording fails closed. The truth table is the
+                    // single authority seam: the owner's records flip the
+                    // gate inputs, never the callback's return path.
+                    // reviewAcknowledged is true in the ADR 0006 sense: the
+                    // Judge-owned audit write for this result happens before
+                    // the authority return, and a failed write flips
+                    // auditHealthy sticky-unhealthy, closing authority for
+                    // every later ask.
+                    const liveIdentity: CandidateIdentity = {
+                        ...captured.identityBase,
+                        provider: result.metadata?.provider ?? "",
+                        model: result.metadata?.model ?? "",
+                        api: result.metadata?.api ?? "",
+                    };
+                    const gates = resolvePromotionGates(
+                        captured.promotionRecords,
+                        liveIdentity,
+                    );
+                    const gateState: EnforceGateState = {
+                        auditHealthy: captured.auditLog.healthy(),
+                        telemetryHealth: sink.health(),
+                        cohortQualified: gates.cohortQualified,
+                        ownerApprovalRecorded: gates.ownerApprovalRecorded,
+                        activationRecorded: gates.activationRecorded,
+                        resultKind:
+                            result.kind === "judgment"
+                                ? "judgment"
+                                : result.kind,
+                        verdict:
+                            result.kind === "judgment" ? result.verdict : null,
+                        reviewAcknowledged: true,
+                        generationCurrent: !captured.shutdown.signal.aborted,
+                        mode: captured.config.mode,
+                    };
+                    const authority = evaluateEnforceAuthority(gateState);
+                    const effectiveVerdict =
+                        authority.kind === "allow" ? "allow" : "defer";
+                    const authorityBlockedBy =
+                        authority.kind === "allow" ? null : authority.blockedBy;
+
                     if (result.kind === "judgment") {
                         emitResult({
                             ...resultBase(
@@ -295,7 +359,8 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                             ),
                             resultKind: "judgment",
                             verdict: result.verdict,
-                            effectiveVerdict: "defer",
+                            effectiveVerdict,
+                            authorityBlockedBy,
                             modelCalled: true,
                             code: null,
                             provider: result.metadata.provider,
@@ -321,7 +386,8 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                             ),
                             resultKind: "infrastructure_failure",
                             verdict: null,
-                            effectiveVerdict: "defer",
+                            effectiveVerdict,
+                            authorityBlockedBy,
                             modelCalled: result.modelCalled,
                             code: result.code,
                             provider: result.metadata?.provider ?? null,
@@ -334,19 +400,6 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                         });
                     }
 
-                    // Enforce truth table (PIEXTENSIO-3 cat.4 / M5): v0.1
-                    // production gates are structurally unreachable, so any
-                    // configured mode resolves to defer here. The call
-                    // exists so the truth table is the single authority
-                    // seam — a future slice flips the gate inputs, not the
-                    // callback's return path.
-                    const authority = evaluateEnforceAuthority(
-                        v01ProductionGateState(
-                            captured.config.mode,
-                            sink.health(),
-                            captured.auditLog.healthy(),
-                        ),
-                    );
                     return authority.kind === "allow"
                         ? { kind: "allow" }
                         : { kind: "defer" };
@@ -372,6 +425,27 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
         }
 
         const runtimeId = crypto.randomUUID();
+        const config = loadJudgeConfig({ agentDir: getAgentDir() });
+        // Static candidate-identity fields. The judge and permission-system
+        // versions must track package.json / the peer floor; the cohort
+        // declaration used exactly these values.
+        const identityBase = {
+            judge: "@sikongjueluo/pi-permission-ai-judge@0.0.1",
+            permissionSystem: "25.4.0",
+            promptVersion: PROMPT_VERSION,
+            toolSchemaVersion: TOOL_SCHEMA_VERSION,
+            reviewSchemaVersion: String(REVIEW_SCHEMA_VERSION),
+            timeoutCohort: config.timeoutCohort,
+        };
+        const promotionRecords = loadPromotionRecords({
+            agentDir: getAgentDir(),
+        });
+        if (promotionRecords.diagnostic !== null) {
+            ctx.ui.notify(
+                `ai-bash-judge promotion records: ${promotionRecords.diagnostic}; Enforce gates stay closed`,
+                "warning",
+            );
+        }
         root = {
             getSessionId: () => ctx.sessionManager.getSessionId(),
             expectedSessionId: sessionId,
@@ -379,12 +453,14 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
             modelRegistry: ctx.modelRegistry,
             shutdown: new AbortController(),
             judgeRuntimeId: runtimeId,
-            config: loadJudgeConfig({ agentDir: getAgentDir() }),
+            config,
             reviewLogEnabled: readPermissionReviewLogEnabled(),
             auditLog: createAuditLog({
                 agentDir: getAgentDir(),
                 runtimeId,
             }),
+            promotionRecords,
+            identityBase,
             conversation: conversationProbeFromSession(ctx.sessionManager),
             getCwd: () => ctx.sessionManager.getCwd(),
         };

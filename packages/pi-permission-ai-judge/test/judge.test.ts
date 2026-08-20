@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
     evaluateEnforceAuthority,
-    v01ProductionGateState,
     type EnforceGateState,
 } from "../src/judge";
+import {
+    loadPromotionRecords,
+    resolvePromotionGates,
+    type CandidateIdentity,
+} from "../src/promotion";
 
 const ALL_OPEN: EnforceGateState = {
     auditHealthy: true,
@@ -55,31 +59,85 @@ describe("evaluateEnforceAuthority — every gate independently forces defer", (
     }
 });
 
-describe("evaluateEnforceAuthority — v0.1 production state", () => {
-    it("never grants authority for any mode or telemetry state in v0.1", () => {
+describe("evaluateEnforceAuthority — production state with no promotion records", () => {
+    // The real post-PIEXTENSIO-21 seam: an empty records file (the normal
+    // pre-promotion state) closes all promotion gates, so every mode and
+    // telemetry state defers — mechanically identical to v0.1's hardcoded
+    // closure, now derived from actual storage.
+    const emptySnapshot = loadPromotionRecords({
+        agentDir: "/nonexistent-agent-dir",
+    });
+    const identity: CandidateIdentity = {
+        judge: "@sikongjueluo/pi-permission-ai-judge@0.0.1",
+        permissionSystem: "25.4.0",
+        provider: "openai-codex",
+        model: "gpt-5.6-sol",
+        api: "openai-codex-responses",
+        promptVersion: "bash-shadow-v4",
+        toolSchemaVersion: "report-verdict-v1",
+        reviewSchemaVersion: "1",
+        timeoutCohort: 30000,
+    };
+
+    it("never grants authority for any mode or telemetry state without records", () => {
         const modes = ["shadow", "enforce"] as const;
         const healths = ["healthy", "disabled", "write_failed", "integrity_anomaly"] as const;
         for (const mode of modes) {
             for (const health of healths) {
-                const outcome = evaluateEnforceAuthority(
-                    v01ProductionGateState(mode, health),
-                );
+                const gates = resolvePromotionGates(emptySnapshot, identity);
+                const outcome = evaluateEnforceAuthority({
+                    ...ALL_OPEN,
+                    mode,
+                    telemetryHealth: health,
+                    ...gates,
+                });
                 expect(outcome.kind).toBe("defer");
             }
         }
     });
 
-    it("blocks v0.1 enforce on the cohort gate even with healthy audit", () => {
-        const outcome = evaluateEnforceAuthority(
-            v01ProductionGateState("enforce", "healthy", true),
-        );
-        expect(outcome).toEqual({ kind: "defer", blockedBy: "cohort_not_qualified" });
+    it("blocks enforce on the cohort gate first even with healthy audit", () => {
+        const gates = resolvePromotionGates(emptySnapshot, identity);
+        const outcome = evaluateEnforceAuthority({
+            ...ALL_OPEN,
+            ...gates,
+        });
+        expect(outcome).toEqual({
+            kind: "defer",
+            blockedBy: "cohort_not_qualified",
+        });
     });
 
-    it("blocks v0.1 enforce on the audit gate when the audit log is unhealthy", () => {
-        const outcome = evaluateEnforceAuthority(
-            v01ProductionGateState("enforce", "healthy", false),
-        );
-        expect(outcome).toEqual({ kind: "defer", blockedBy: "audit_unhealthy" });
+    it("grants authority only when every record kind exists for the exact identity", () => {
+        const records = [
+            {
+                kind: "cohort_qualified",
+                candidateIdentity: identity,
+                recordedAt: "2026-08-20T12:00:00Z",
+                basis: "cohort test",
+            },
+            {
+                kind: "owner_approval",
+                candidateIdentity: identity,
+                recordedAt: "2026-08-20T12:01:00Z",
+                basis: "approved",
+            },
+            {
+                kind: "activation",
+                candidateIdentity: identity,
+                recordedAt: "2026-08-20T12:02:00Z",
+                basis: "activated",
+            },
+        ] as const;
+        const snapshot = {
+            records,
+            healthy: true,
+            diagnostic: null,
+            path: "unused",
+        };
+        const gates = resolvePromotionGates(snapshot, identity);
+        expect(evaluateEnforceAuthority({ ...ALL_OPEN, ...gates })).toEqual({
+            kind: "allow",
+        });
     });
 });

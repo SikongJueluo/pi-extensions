@@ -4,11 +4,10 @@ import type { TelemetryHealth } from "./review";
  * Enforce truth table (PIEXTENSIO-3 cat.4 / M5).
  *
  * `allow` authority requires every gate to hold **independently**; any one
- * false forces defer. In v0.1 the promotion gates (cohort, approval,
- * activation) are structurally unreachable — no upstream seam exists to
- * record them — so a configured `enforce` mode can never grant authority:
- * mechanically fail-closed by construction, verified by the truth-table
- * tests toggling each condition.
+ * false forces defer. Since PIEXTENSIO-21 the promotion gates read the
+ * Judge-owned records file (exact-identity qualification, fail-closed);
+ * with no records, every mode mechanically defers — verified by the
+ * truth-table tests toggling each condition.
  */
 
 export type EnforceGateState = {
@@ -38,8 +37,8 @@ export type EnforceOutcome = { kind: "allow" } | { kind: "defer"; blockedBy: str
 
 /**
  * Evaluate the Enforce truth table. Shadow always defers. The distinct
- * `blockedBy` reasons keep each gate's veto observable in tests (and in a
- * future review event) without granting anything.
+ * `blockedBy` reasons keep each gate's veto observable in tests and in the
+ * authority field of every result row without granting anything.
  */
 export function evaluateEnforceAuthority(
     state: EnforceGateState,
@@ -75,31 +74,4 @@ export function evaluateEnforceAuthority(
         return { kind: "defer", blockedBy: "generation_stale" };
     }
     return { kind: "allow" };
-}
-
-/**
- * The v0.1 production gate state: the promotion gates are structurally
- * unreachable until the owner records a qualifying cohort, approval, and
- * activation (ADR 0006: recorded Judge-side, not via a host contract),
- * so `enforce` defers here regardless of configuration. The full truth
- * table above is exercised through injected fake gate states in tests
- * only.
- */
-export function v01ProductionGateState(
-    mode: "shadow" | "enforce",
-    telemetryHealth: TelemetryHealth,
-    auditHealthy = true,
-): EnforceGateState {
-    return {
-        auditHealthy,
-        telemetryHealth,
-        cohortQualified: false,
-        ownerApprovalRecorded: false,
-        activationRecorded: false,
-        resultKind: "judgment",
-        verdict: null,
-        reviewAcknowledged: false,
-        generationCurrent: true,
-        mode,
-    };
 }

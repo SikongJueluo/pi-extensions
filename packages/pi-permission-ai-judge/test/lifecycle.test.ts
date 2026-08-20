@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -50,6 +50,8 @@ import {
     unpublishPermissionsService,
 } from "@gotgenes/pi-permission-system";
 import extension from "../src/index";
+import { appendPromotionRecord, type CandidateIdentity } from "../src/promotion";
+import { PROMPT_VERSION, TOOL_SCHEMA_VERSION } from "../src/prompt";
 
 function createFakePi(): {
     pi: ExtensionAPI;
@@ -537,5 +539,196 @@ describe("AI judge lifecycle", () => {
         harness.ready();
 
         expect(service.registerAuthorizer).not.toHaveBeenCalled();
+    });
+});
+
+describe("AI judge Enforce authority seam (PIEXTENSIO-21)", () => {
+    beforeEach(() => {
+        createMockAgentDir();
+        writeFileSync(
+            join(mockAgentDir.dir, "pi-permission-ai-judge.config.json"),
+            JSON.stringify({ mode: "enforce" }),
+        );
+    });
+
+    /** Records identity matching the lifecycle fake model + static fields. */
+    function lifecycleIdentity(): CandidateIdentity {
+        return {
+            judge: "@sikongjueluo/pi-permission-ai-judge@0.0.1",
+            permissionSystem: "25.4.0",
+            provider: "test-provider",
+            model: "test-model",
+            api: "openai-codex-responses",
+            promptVersion: PROMPT_VERSION,
+            toolSchemaVersion: TOOL_SCHEMA_VERSION,
+            reviewSchemaVersion: "1",
+            timeoutCohort: "default",
+        };
+    }
+
+    async function runAsk(): Promise<{
+        verdict: { kind: string };
+        reviews: Array<{ event: string; details?: Record<string, unknown> }>;
+    }> {
+        let authorize: Authorizer["authorize"] | undefined;
+        const service = {
+            registerAuthorizer: vi.fn((_name, callback) => {
+                authorize = callback;
+                return vi.fn();
+            }),
+            checkPermission: vi.fn(),
+            getToolPermission: vi.fn(),
+        } as unknown as PermissionsService;
+        publishPermissionsService(service);
+        publishedService = service;
+
+        const complete = vi.fn(async () => modelResponse());
+        const ctx = {
+            hasUI: true,
+            sessionManager: fakeSessionManager(),
+            model: {
+                id: "test-model",
+                provider: "test-provider",
+                api: "openai-codex-responses",
+            } as Model<any>,
+            modelRegistry: { complete },
+            ui: { notify: vi.fn() },
+        } as unknown as ExtensionContext;
+
+        const harness = createFakePi();
+        extension(harness.pi);
+        harness.start(ctx);
+        harness.ready();
+        expect(authorize).toBeDefined();
+
+        const reviews: Array<{ event: string; details?: Record<string, unknown> }> = [];
+        const verdict = await authorize!(
+            ask(),
+            {
+                checkPermission: vi.fn(),
+                getToolPermission: vi.fn(),
+            },
+            {
+                review: (event, details) => reviews.push({ event, details }),
+                debug: vi.fn(),
+            },
+        );
+        harness.shutdown();
+        return { verdict, reviews };
+    }
+
+    it("defers in enforce mode when no promotion records exist", async () => {
+        const { verdict, reviews } = await runAsk();
+        expect(verdict).toEqual({ kind: "defer" });
+        expect(reviews).toMatchObject([
+            {
+                event: "ai_bash_judge.result",
+                details: expect.objectContaining({
+                    mode: "enforce",
+                    verdict: "allow",
+                    effectiveVerdict: "defer",
+                    authorityBlockedBy: "cohort_not_qualified",
+                }),
+            },
+        ]);
+    });
+
+    it("grants authority in enforce mode only with all three exact-identity records", async () => {
+        const identity = lifecycleIdentity();
+        for (const [kind, basis] of [
+            ["cohort_qualified", "cohort piextensio-test"],
+            ["owner_approval", "approved for test"],
+            ["activation", "activated for test"],
+        ] as const) {
+            expect(
+                appendPromotionRecord({
+                    agentDir: mockAgentDir.dir,
+                    record: {
+                        kind,
+                        candidateIdentity: identity,
+                        recordedAt: "2026-08-21T10:00:00Z",
+                        basis,
+                    },
+                }),
+            ).toBeNull();
+        }
+        const { verdict, reviews } = await runAsk();
+        expect(verdict).toEqual({ kind: "allow" });
+        expect(reviews).toMatchObject([
+            {
+                event: "ai_bash_judge.result",
+                details: expect.objectContaining({
+                    mode: "enforce",
+                    verdict: "allow",
+                    effectiveVerdict: "allow",
+                    authorityBlockedBy: null,
+                }),
+            },
+        ]);
+    });
+
+    it("defers in enforce mode when records exist for another identity", async () => {
+        const identity = { ...lifecycleIdentity(), model: "other-model" };
+        for (const kind of [
+            "cohort_qualified",
+            "owner_approval",
+            "activation",
+        ] as const) {
+            appendPromotionRecord({
+                agentDir: mockAgentDir.dir,
+                record: {
+                    kind,
+                    candidateIdentity: identity,
+                    recordedAt: "2026-08-21T10:00:00Z",
+                    basis: "other identity",
+                },
+            });
+        }
+        const { verdict, reviews } = await runAsk();
+        expect(verdict).toEqual({ kind: "defer" });
+        expect(reviews).toMatchObject([
+            {
+                event: "ai_bash_judge.result",
+                details: expect.objectContaining({
+                    effectiveVerdict: "defer",
+                    authorityBlockedBy: "cohort_not_qualified",
+                }),
+            },
+        ]);
+    });
+
+    it("never grants authority in shadow mode regardless of records", async () => {
+        writeFileSync(
+            join(mockAgentDir.dir, "pi-permission-ai-judge.config.json"),
+            JSON.stringify({ mode: "shadow" }),
+        );
+        const identity = lifecycleIdentity();
+        for (const kind of [
+            "cohort_qualified",
+            "owner_approval",
+            "activation",
+        ] as const) {
+            appendPromotionRecord({
+                agentDir: mockAgentDir.dir,
+                record: {
+                    kind,
+                    candidateIdentity: identity,
+                    recordedAt: "2026-08-21T10:00:00Z",
+                    basis: "shadow still defers",
+                },
+            });
+        }
+        const { verdict, reviews } = await runAsk();
+        expect(verdict).toEqual({ kind: "defer" });
+        expect(reviews).toMatchObject([
+            {
+                event: "ai_bash_judge.result",
+                details: expect.objectContaining({
+                    mode: "shadow",
+                    effectiveVerdict: "defer",
+                    authorityBlockedBy: "mode_shadow",
+                }),
+            },
+        ]);
     });
 });
