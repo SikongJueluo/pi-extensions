@@ -37,7 +37,7 @@ function isNonBlank(value: unknown): value is string {
 }
 
 /** Read a complete direct native-Bash ask from the structured prompt payload. */
-export function extractBashCommandEvidence(
+function extractBashCommandEvidence(
     details: PromptPermissionDetails,
 ): BashCommandEvidence | undefined {
     const payload = details.payload;

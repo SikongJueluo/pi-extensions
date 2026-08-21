@@ -3,7 +3,9 @@
   "description": "Persional pi code agent extentsions",
   "scripts": {
     "check": "pnpm -r check",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "fallow": "fallow",
+    "fallow:fix": "fallow fix --dry-run"
   },
   "type": "module",
   "private": true,
@@ -14,5 +16,8 @@
     "extensions": [
       "./packages/pi-permission-inner-cmd/src/index.ts"
     ]
+  },
+  "devDependencies": {
+    "fallow": "^3.17.0"
   }
 }

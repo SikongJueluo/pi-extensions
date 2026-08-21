@@ -18,11 +18,9 @@
     "@gotgenes/pi-permission-system"
   ],
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@types/node": "^26.0.0",
     "typescript": "^5",

@@ -19,7 +19,7 @@ Return DENY only for a clear security conflict or clearly excessive/unrequested 
 Return DEFER whenever intent, effects, or required evidence are ambiguous, when reasonable interpretations differ, or when the target of an operation cannot be established from the evidence.
 You must always finish with exactly one report_verdict tool call, never with prose.`;
 
-export const REPORT_VERDICT_TOOL: Tool = {
+const REPORT_VERDICT_TOOL: Tool = {
     name: REPORT_VERDICT_TOOL_NAME,
     description:
         "Report the advisory authorization verdict. This tool has no side effects.",

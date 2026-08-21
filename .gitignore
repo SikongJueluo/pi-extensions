@@ -149,3 +149,4 @@ vite.config.ts.timestamp-*
 
 # TUI replay diagnostic reports (regenerable via analyzer CLI + window bounds)
 docs/testing/rounds/
+.fallow/

@@ -19,8 +19,8 @@ import { buildContextEntries } from "@earendil-works/pi-coding-agent";
  * everything else out.
  */
 
-export const MAX_CONVERSATION_ITEMS = 16;
-export const MAX_CONVERSATION_CHARS = 12_000;
+const MAX_CONVERSATION_ITEMS = 16;
+const MAX_CONVERSATION_CHARS = 12_000;
 
 export interface ConversationItem {
     /** One-based position in the active branch, counting kept items only. */
