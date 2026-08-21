@@ -1,14 +1,14 @@
 # pi-permission-ai-judge
 
-[`pi`](https://github.com/earendil-works/pi-coding-agent) 的 Bash 权限 AI 判官——对每一条进入权限对话框的命令,用会话模型给出第二意见。
+[`pi`](https://github.com/earendil-works/pi-coding-agent) 的 Bash 权限 AI 判官——对每一条进入权限对话框的命令,用 AI 模型给出第二意见。
 
 - **影子模式**(默认):判官并行给出"允许 / 拒绝 / 交给人类"的判决,人类照常决策;判决与证据元数据全部落盘,可离线分析
-- **强制模式**:仅允许委托——仅当判决为"允许"且全部治理门通过时跳过人类对话框;任何不确定(交人类 / 拒绝 / 超时 / 健康异常)一律回落对话框。不可逆操作(如 `git clean -xfd`)永远交给人类,详见 ADR 0007
+- **强制模式**(config v2):**用户自担风险的便利模式**——判官判决"允许"且运行时健康门全部通过时跳过人类对话框;判官"拒绝/交人类/超时/健康异常"一律回落对话框,不引入自动拒绝。明确的高风险命令形状(不可逆删除、发布/基础设施销毁、提权/系统修改、直接读删凭据)永远交人类。详见 ADR 0008
 
 ## 安装
 
 ```bash
-pi install github.com/Sikongjueluo/pi-extensions
+pi install github.com/SikongJueluo/pi-extensions
 ```
 
 依赖项目启用 [`@gotgenes/pi-permission-system`](https://github.com/gotgenes/pi-permission-system) ≥ 25.4,并配置授权链(仅 UI 会话生效):
@@ -23,27 +23,30 @@ pi install github.com/Sikongjueluo/pi-extensions
 `~/.pi/agent/pi-permission-ai-judge.config.json`,会话启动时读取:
 
 ```json
-{ "mode": "shadow", "timeoutMs": 30000 }
+{
+  "version": 2,
+  "mode": "enforce",
+  "model": { "provider": "openai-codex", "id": "gpt-5.6-sol" },
+  "timeoutMs": 30000
+}
 ```
 
-- `mode`:`shadow`(影子)| `enforce`(强制),默认影子;非法值一律回退影子
-- `timeoutMs`:5000–30000,默认 15000。**非默认超时是独立的配置群组**,不继承其他群组的晋升记录
+- `version`:配置协议版本。**旧 v1 配置(无 `version` 字段)里的 `mode: "enforce"` 不会静默获得新授权**——会回退 shadow 并提示迁移;写入 `"version": 2` 即完成一次显式迁移,这个动作本身就是风险同意
+- `mode`:`shadow`(默认)| `enforce`(强制)。非法值一律回退 shadow
+- `model`(可选,仅 v2):固定判官模型,不随会话模型切换。配置的模型不存在、无认证或 API 不支持时,该次询问记为基础设施失败并交人类,**绝不静默改用会话模型**;未配置时跟随当前会话模型
+- `timeoutMs`:5000–30000,默认 15000
 
-## 强制模式晋升（仅仓库所有者；普通用户无需任何操作）
+强制模式每次会话启动时弹一次非阻塞通知,显示实际判官模型与风险契约;不逐次重复。
 
-默认影子模式对使用者零门槛。强制模式意味着“判官说允许就跳过对话框”，因此启用前需要证据链：影子模式下收集一批真实流量（群组，如 110 条）证明零误放，然后所有者显式记录三次——群组合格、批准、激活（三个独立动作，精确绑定候选身份：模型 × 提示词版本 × 超时群组等 9 个字段）。任一缺失或身份漂移即自动关闸。
+## 强制模式 = 风险契约(不是安全认证)
 
-**使用者两种选择：**信任本仓库已归档的群组证据，直接拷贝 `promotion-records.jsonl` 并配置 `mode: "enforce"`；或换用自己的模型，重新收集群组后自行记录。所有者记录命令：
+手写 `mode: "enforce"` 即表示:你授权所选判官模型代为批准普通操作,并**自行承担漏判/误判风险**(ADR 0008)。本包不承诺任何"模型已获安全认证",也不试图覆盖所有危险 shell 行为。保留的运行时保护:
 
-```bash
-cd packages/pi-permission-ai-judge
-npx tsx tools/promotion-record.ts --kind cohort_qualified \
-  --provider openai-codex --model gpt-5.6-sol --api openai-codex-responses \
-  --timeout-cohort 30000 --basis "cohort id; report path"
-# 再依次 --kind owner_approval、--kind activation(三个独立显式动作)
-```
+- **健康门**(全部 fail-closed):审计日志健康、遥测健康、判决结果类型、审计回执、会话世代——任一失败即回退对话框
+- **内置高风险 override**(窄范围代码级规则,不是 sandbox):明确的数据丢失/历史重写(`git clean -xfd`、`git reset --hard`、`git push --force`、`rm -rf ~` 等)、发布/部署/基础设施销毁(`npm publish`、`terraform destroy` 等)、提权/系统修改(`sudo`、`mkfs`、`dd of=/dev/*`、`shutdown` 等)、直接凭据读取/输出/删除(`cat ~/.ssh/id_*`、`~/.aws/credentials`、`~/.gnupg` 等)。Enforce 命中时不调模型、立即交人类;Shadow 命中时仍调模型(保留质量观测)并记录 override,最终照常人类决策。不解析别名/脚本内容/变量展开,没有 `alwaysPrompt` 配置
+- 回滚 = 配置切回 `shadow`
 
-记录写入 `~/.pi/agent/extensions/pi-permission-ai-judge/promotion-records.jsonl`(只追加)。回滚 = 配置切回 `shadow`;记录保留作审计轨迹。
+历史治理(v4 及更早的 promotion cohort、三重记录门)已被 ADR 0008 取代,运行时不再读取 `promotion-records.jsonl`;旧记录与 cohort 报告原样保留作审计资料,见 `docs/testing/`。
 
 ## 日志与工具
 
@@ -54,5 +57,6 @@ npx tsx tools/promotion-record.ts --kind cohort_qualified \
 
 ## 文档
 
-- 治理与晋升底线:PIEXTENSIO-10;v3 失败与 v4 修复:PIEXTENSIO-19/20/22,见 `docs/testing/`
-- ADR 0006(审计自持)、0007(不可逆边界):见 `docs/adr/`
+- 风险契约与治理变更:ADR 0008 / PIEXTENSIO-23
+- 审计自持:ADR 0006;不可逆边界:ADR 0007,见 `docs/adr/`
+- 旧 cohort 证据(v4 前含晋升治理):`docs/testing/`

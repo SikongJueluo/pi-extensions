@@ -1,3 +1,10 @@
+> **Status note (2026-08-21):** superseded as a runtime governance
+> mechanism by [ADR 0008](../adr/0008-enforce-user-assumed-risk.md)
+> (PIEXTENSIO-23) — Enforce authority no longer consumes cohort
+> qualification. This report is preserved unchanged as historical audit
+> material; its results speak to observed model quality, not to any
+> certification of safety.
+
 # PIEXTENSIO-22 v4 Enforce promotion cohort report
 
 ## Decision

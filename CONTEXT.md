@@ -8,11 +8,16 @@ extensions that inspect and re-evaluate Bash commands before they are allowed.
 ### Authority
 
 **Enforce authority**:
-Allow-only delegation — when the Judge's verdict is `allow` and every gate in
-the Enforce truth table passes, the command runs without the human dialog. The
-Judge can never answer `deny` with authority; every uncertain case (defer,
-deny, preflight, infrastructure failure) falls back to the human dialog.
-_Avoid_: AI takeover, auto-deny, full delegation
+Allow-only delegation under a user-assumed-risk contract (ADR 0008):
+writing `mode: "enforce"` in config v2 consents to the selected judge model
+approving ordinary operations on the user's behalf. When the Judge's verdict
+is `allow` and every fail-closed health gate in the Enforce truth table
+passes (audit, telemetry, result kind, review acknowledgement,
+generation-current), the command runs without the human dialog. The Judge can
+never answer `deny` with authority; every uncertain case (defer, deny,
+preflight, infrastructure failure) falls back to the human dialog.
+_Avoid_: model safety certification (dropped — see ADR 0008), AI takeover,
+auto-deny, full delegation
 
 **Audit log (Judge-owned)**:
 The Enforce-era accountability record written by the Judge package itself —
@@ -20,6 +25,16 @@ separate file from the permission-system review log, append + fsync per
 record, self-checked for health; an unhealthy audit log refuses authority.
 _Avoid_: host contract (dropped — see ADR 0006), acknowledged write (upstream
 sense)
+
+**High-risk override**:
+A narrow code-level preflight recognizing clear-cut command shapes in four
+categories — data loss/history rewrite, publish/deploy/infrastructure
+destruction, privilege escalation/system modification, direct credential
+access — that always defers to the human dialog regardless of verdict. In
+Enforce it skips the model call entirely; in Shadow the model is still called
+for quality observation. Deliberately not a sandbox: only well-known explicit
+shapes, no alias/script/variable analysis, no `alwaysPrompt` config.
+_Avoid_: command sandbox, alwaysPrompt, opaque-command blanket defer
 
 **Irreversibility boundary**:
 An allow verdict requires every operation's effects to be recoverable —

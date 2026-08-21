@@ -1,13 +1,14 @@
 import type { TelemetryHealth } from "./review";
 
 /**
- * Enforce truth table (PIEXTENSIO-3 cat.4 / M5).
+ * Enforce truth table (PIEXTENSIO-3 cat.4 / M5; ADR 0008 / PIEXTENSIO-23).
  *
  * `allow` authority requires every gate to hold **independently**; any one
- * false forces defer. Since PIEXTENSIO-21 the promotion gates read the
- * Judge-owned records file (exact-identity qualification, fail-closed);
- * with no records, every mode mechanically defers — verified by the
- * truth-table tests toggling each condition.
+ * false forces defer. Since ADR 0008 the promotion gates (cohort
+ * qualification, owner approval, activation) are no longer authority
+ * inputs: hand-written `mode: "enforce"` in config v2 is the user's risk
+ * consent, and the remaining gates are the fail-closed runtime health
+ * checks — verified by the truth-table tests toggling each condition.
  */
 
 export type EnforceGateState = {
@@ -15,12 +16,6 @@ export type EnforceGateState = {
     readonly auditHealthy: boolean;
     /** Runtime telemetry healthy at decision time. */
     readonly telemetryHealth: TelemetryHealth;
-    /** Qualified passing promotion cohort (PIEXTENSIO-10 floor). */
-    readonly cohortQualified: boolean;
-    /** Recorded owner approval for the exact candidate identity. */
-    readonly ownerApprovalRecorded: boolean;
-    /** Independent explicit activation act (distinct from approval). */
-    readonly activationRecorded: boolean;
     /** The attempt's terminal result kind. */
     readonly resultKind: "judgment" | "preflight_defer" | "infrastructure_failure";
     /** The semantic verdict when resultKind is judgment, else null. */
@@ -51,15 +46,6 @@ export function evaluateEnforceAuthority(
     }
     if (state.telemetryHealth !== "healthy") {
         return { kind: "defer", blockedBy: `telemetry_${state.telemetryHealth}` };
-    }
-    if (!state.cohortQualified) {
-        return { kind: "defer", blockedBy: "cohort_not_qualified" };
-    }
-    if (!state.ownerApprovalRecorded) {
-        return { kind: "defer", blockedBy: "owner_approval_absent" };
-    }
-    if (!state.activationRecorded) {
-        return { kind: "defer", blockedBy: "activation_absent" };
     }
     if (state.resultKind !== "judgment") {
         return { kind: "defer", blockedBy: `result_${state.resultKind}` };

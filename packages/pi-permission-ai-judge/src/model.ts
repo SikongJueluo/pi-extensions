@@ -28,6 +28,7 @@ const MAX_OUTPUT_TOKENS = 4_096;
 export type InfrastructureCode =
     | "no_model"
     | "unsupported_api"
+    | "judge_model_unavailable"
     | "timeout"
     | "aborted"
     | "model_error"

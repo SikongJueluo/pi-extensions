@@ -24,16 +24,8 @@ import {
     conversationProbeFromSession,
     type ConversationEvidence,
 } from "./conversation";
-import {
-    evaluateEnforceAuthority,
-    type EnforceGateState,
-} from "./judge";
-import {
-    loadPromotionRecords,
-    resolvePromotionGates,
-    type CandidateIdentity,
-    type PromotionRecordsSnapshot,
-} from "./promotion";
+import { classifyHighRisk, type HighRiskMatch } from "./highrisk";
+import { evaluateEnforceAuthority, type EnforceGateState } from "./judge";
 
 const LINK_NAME = "ai-bash-judge";
 const REVIEW_SCHEMA_VERSION = 1;
@@ -58,15 +50,6 @@ interface RootSession {
     readonly getCwd: () => string;
     /** Judge-owned audit log (ADR 0006); unhealthy refuses Enforce authority. */
     readonly auditLog: AuditLog;
-    /** Promotion-records snapshot loaded at session start (PIEXTENSIO-21);
-     * gates are resolved per ask against the live candidate identity. */
-    readonly promotionRecords: PromotionRecordsSnapshot;
-    /** Static candidate-identity fields (everything except the model
-     * segment, which is captured per ask). */
-    readonly identityBase: Omit<
-        CandidateIdentity,
-        "provider" | "model" | "api"
-    >;
 }
 
 const EMPTY_CONVERSATION: ConversationEvidence = {
@@ -122,9 +105,6 @@ function resultBase(
         requestId: details.requestId,
         judgeRuntimeId,
         mode: config.mode,
-        // v0.1 fail-closed: `enforce` loads here but the truth table can
-        // never grant real authority, so the effective verdict below stays
-        // defer; the configured mode is recorded for audit.
         timeoutCohort: config.timeoutCohort,
         origin:
             details.forwarding !== undefined ||
@@ -136,7 +116,6 @@ function resultBase(
         judgeLatencyMs: Date.now() - startedAt,
     };
 }
-
 
 /** Read the permission-system review-log toggle (default true when unset). */
 function readPermissionReviewLogEnabled(): boolean {
@@ -155,6 +134,30 @@ function readPermissionReviewLogEnabled(): boolean {
     } catch {
         return true;
     }
+}
+
+/**
+ * Resolve the judge model for one ask (ADR 0008 / PIEXTENSIO-23).
+ *
+ * A configured v2 `model` is a fixed judge model resolved per ask against
+ * the live registry. Resolution failure (unknown model, no configured
+ * auth) is reported as an explicit failure — never a silent fallback to
+ * the session model. No configured model follows the session model
+ * (legacy behavior).
+ */
+function resolveJudgeModel(
+    config: EffectiveJudgeConfig,
+    sessionModel: Model<any> | undefined,
+    registry: ModelRegistry,
+): { kind: "model"; model: Model<any> | undefined; source: "configured" | "session" } | { kind: "unavailable" } {
+    if (config.judgeModel === undefined) {
+        return { kind: "model", model: sessionModel, source: "session" };
+    }
+    const found = registry.find(config.judgeModel.provider, config.judgeModel.id);
+    if (found === undefined || !registry.hasConfiguredAuth(found)) {
+        return { kind: "unavailable" };
+    }
+    return { kind: "model", model: found, source: "configured" };
 }
 
 /** Register a Shadow-only structured-output judge for local native Bash asks. */
@@ -282,12 +285,67 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                         return { kind: "defer" };
                     }
 
-                    // Per-request model capture (PIEXTENSIO-3 cat.3): an
-                    // in-request switch does not change an in-flight attempt;
-                    // a between-request switch affects the next attempt. The
-                    // probe reads the live current model here, not at start.
-                    const availability = createModelAvailability(
+                    // Built-in high-risk override (ADR 0008): clear-cut
+                    // irreversible/system shapes always defer. In Enforce the
+                    // model is skipped entirely; in Shadow it still runs for
+                    // quality observation and the override is recorded.
+                    const risk: HighRiskMatch | undefined = classifyHighRisk(
+                        evidence.fullCommand,
+                    );
+                    if (risk !== undefined && captured.config.mode === "enforce") {
+                        emitResult({
+                            ...resultBase(
+                                captured.judgeRuntimeId,
+                                details,
+                                startedAt,
+                                captured.config,
+                            ),
+                            resultKind: "preflight_defer",
+                            verdict: null,
+                            effectiveVerdict: "defer",
+                            modelCalled: false,
+                            code: "high_risk_override",
+                            riskCategory: risk.category,
+                            riskRule: risk.rule,
+                            evidenceQuality: evidenceQuality(true, EMPTY_CONVERSATION, captured.getCwd()),
+                        });
+                        return { kind: "defer" };
+                    }
+
+                    // Per-request judge-model resolution (PIEXTENSIO-3 cat.3
+                    // for the session model; ADR 0008 for a configured fixed
+                    // model). A configured model that cannot be resolved is
+                    // an observable infrastructure failure — never a silent
+                    // fallback to the session model.
+                    const resolved = resolveJudgeModel(
+                        captured.config,
                         captured.getModel(),
+                        captured.modelRegistry,
+                    );
+                    if (resolved.kind === "unavailable") {
+                        emitResult({
+                            ...resultBase(
+                                captured.judgeRuntimeId,
+                                details,
+                                startedAt,
+                                captured.config,
+                            ),
+                            resultKind: "infrastructure_failure",
+                            verdict: null,
+                            effectiveVerdict: "defer",
+                            modelCalled: false,
+                            code: "judge_model_unavailable",
+                            provider: captured.config.judgeModel?.provider ?? null,
+                            model: captured.config.judgeModel?.id ?? null,
+                            api: null,
+                            riskOverride: risk ?? null,
+                            evidenceQuality: evidenceQuality(true, EMPTY_CONVERSATION, captured.getCwd()),
+                        });
+                        return { kind: "defer" };
+                    }
+                    const modelSource = resolved.source;
+                    const availability: ModelAvailability = createModelAvailability(
+                        resolved.model,
                         captured.modelRegistry,
                     );
                     // Conversation evidence is captured at ask time from the
@@ -303,36 +361,19 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                         conversation,
                     );
 
-                    // Enforce truth table (PIEXTENSIO-3 cat.4 / M5): the
-                    // promotion gates resolve per ask from the session-start
-                    // records snapshot against the live candidate identity
-                    // (PIEXTENSIO-21) — the current model segment is part of
-                    // that identity, so a mid-session model switch cannot
-                    // inherit another segment's records, and identity drift
-                    // after recording fails closed. The truth table is the
-                    // single authority seam: the owner's records flip the
-                    // gate inputs, never the callback's return path.
-                    // reviewAcknowledged is true in the ADR 0006 sense: the
-                    // Judge-owned audit write for this result happens before
-                    // the authority return, and a failed write flips
-                    // auditHealthy sticky-unhealthy, closing authority for
-                    // every later ask.
-                    const liveIdentity: CandidateIdentity = {
-                        ...captured.identityBase,
-                        provider: result.metadata?.provider ?? "",
-                        model: result.metadata?.model ?? "",
-                        api: result.metadata?.api ?? "",
-                    };
-                    const gates = resolvePromotionGates(
-                        captured.promotionRecords,
-                        liveIdentity,
-                    );
+                    // Enforce truth table (PIEXTENSIO-3 cat.4 / M5; ADR 0008):
+                    // the fail-closed runtime health gates — audit health,
+                    // telemetry, result kind, verdict, review
+                    // acknowledgement, generation currency — are the single
+                    // authority seam; the retired promotion gates are no
+                    // longer inputs. reviewAcknowledged is true in the ADR
+                    // 0006 sense: the Judge-owned audit write for this result
+                    // happens before the authority return, and a failed write
+                    // flips auditHealthy sticky-unhealthy, closing authority
+                    // for every later ask.
                     const gateState: EnforceGateState = {
                         auditHealthy: captured.auditLog.healthy(),
                         telemetryHealth: sink.health(),
-                        cohortQualified: gates.cohortQualified,
-                        ownerApprovalRecorded: gates.ownerApprovalRecorded,
-                        activationRecorded: gates.activationRecorded,
                         resultKind:
                             result.kind === "judgment"
                                 ? "judgment"
@@ -363,9 +404,11 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                             authorityBlockedBy,
                             modelCalled: true,
                             code: null,
+                            modelSource,
                             provider: result.metadata.provider,
                             model: result.metadata.model,
                             api: result.metadata.api,
+                            riskOverride: risk ?? null,
                             // Log keys deliberately avoid the substring
                             // "token": permission-system masks any key matching
                             // /token/i (structural key-name redaction), which
@@ -390,9 +433,11 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                             authorityBlockedBy,
                             modelCalled: result.modelCalled,
                             code: result.code,
+                            modelSource,
                             provider: result.metadata?.provider ?? null,
                             model: result.metadata?.model ?? null,
                             api: result.metadata?.api ?? null,
+                            riskOverride: risk ?? null,
                             inputUsage: result.inputTokens ?? null,
                             outputUsage: result.outputTokens ?? null,
                             modelLatencyMs: result.modelLatencyMs,
@@ -426,26 +471,6 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
 
         const runtimeId = crypto.randomUUID();
         const config = loadJudgeConfig({ agentDir: getAgentDir() });
-        // Static candidate-identity fields. The judge and permission-system
-        // versions must track package.json / the peer floor; the cohort
-        // declaration used exactly these values.
-        const identityBase = {
-            judge: "@sikongjueluo/pi-permission-ai-judge@0.0.1",
-            permissionSystem: "25.4.0",
-            promptVersion: PROMPT_VERSION,
-            toolSchemaVersion: TOOL_SCHEMA_VERSION,
-            reviewSchemaVersion: String(REVIEW_SCHEMA_VERSION),
-            timeoutCohort: config.timeoutCohort,
-        };
-        const promotionRecords = loadPromotionRecords({
-            agentDir: getAgentDir(),
-        });
-        if (promotionRecords.diagnostic !== null) {
-            ctx.ui.notify(
-                `ai-bash-judge promotion records: ${promotionRecords.diagnostic}; Enforce gates stay closed`,
-                "warning",
-            );
-        }
         root = {
             getSessionId: () => ctx.sessionManager.getSessionId(),
             expectedSessionId: sessionId,
@@ -459,8 +484,6 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
                 agentDir: getAgentDir(),
                 runtimeId,
             }),
-            promotionRecords,
-            identityBase,
             conversation: conversationProbeFromSession(ctx.sessionManager),
             getCwd: () => ctx.sessionManager.getCwd(),
         };
@@ -468,6 +491,25 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
             ctx.ui.notify(
                 `ai-bash-judge config: ${diagnostic.key} — ${diagnostic.problem}; using ${diagnostic.fallback}`,
                 "warning",
+            );
+        }
+        // One non-blocking session notice in Enforce mode: the risk
+        // contract and the effective judge model (ADR 0008). Not repeated
+        // per ask.
+        if (root.config.mode === "enforce") {
+            const configured = root.config.judgeModel;
+            const judgeModelDescription =
+                configured !== undefined
+                    ? `${configured.provider}/${configured.id} (configured)`
+                    : (() => {
+                          const sessionModel = ctx.model;
+                          return sessionModel === undefined
+                              ? "the current session model (none resolved yet)"
+                              : `${sessionModel.provider}/${sessionModel.id} (current session model)`;
+                      })();
+            ctx.ui.notify(
+                `ai-bash-judge Enforce active: ${judgeModelDescription} judges Bash asks; allow skips the dialog — you accept the risk of model misjudgment (ADR 0008). High-risk shapes (irreversible, publish, system, credentials) always ask.`,
+                "info",
             );
         }
         tryRegister();

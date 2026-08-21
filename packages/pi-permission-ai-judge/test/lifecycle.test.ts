@@ -50,7 +50,6 @@ import {
     unpublishPermissionsService,
 } from "@gotgenes/pi-permission-system";
 import extension from "../src/index";
-import { appendPromotionRecord, type CandidateIdentity } from "../src/promotion";
 import { PROMPT_VERSION, TOOL_SCHEMA_VERSION } from "../src/prompt";
 
 function createFakePi(): {
@@ -542,33 +541,39 @@ describe("AI judge lifecycle", () => {
     });
 });
 
-describe("AI judge Enforce authority seam (PIEXTENSIO-21)", () => {
+describe("AI judge Enforce authority seam (PIEXTENSIO-23, ADR 0008)", () => {
     beforeEach(() => {
         createMockAgentDir();
-        writeFileSync(
-            join(mockAgentDir.dir, "pi-permission-ai-judge.config.json"),
-            JSON.stringify({ mode: "enforce" }),
-        );
     });
 
-    /** Records identity matching the lifecycle fake model + static fields. */
-    function lifecycleIdentity(): CandidateIdentity {
-        return {
-            judge: "@sikongjueluo/pi-permission-ai-judge@0.0.1",
-            permissionSystem: "25.4.0",
-            provider: "test-provider",
-            model: "test-model",
-            api: "openai-codex-responses",
-            promptVersion: PROMPT_VERSION,
-            toolSchemaVersion: TOOL_SCHEMA_VERSION,
-            reviewSchemaVersion: "1",
-            timeoutCohort: "default",
-        };
+    function writeConfig(config: Record<string, unknown>): void {
+        writeFileSync(
+            join(mockAgentDir.dir, "pi-permission-ai-judge.config.json"),
+            JSON.stringify(config),
+        );
     }
 
-    async function runAsk(): Promise<{
+    interface RunAskOptions {
+        /** Config file contents (written before session start). */
+        config: Record<string, unknown>;
+        /** Command unit for the ask; full command becomes `pnpm test && <unit>`. */
+        command?: string;
+        /** modelRegistry.find result for a configured judge model (when set). */
+        findResult?: Model<any> | undefined;
+        /** Whether the found model has configured auth. */
+        authConfigured?: boolean;
+        /** Overridable model verdict. */
+        response?: AssistantMessage;
+    }
+
+    async function runAsk(
+        options: RunAskOptions,
+    ): Promise<{
         verdict: { kind: string };
         reviews: Array<{ event: string; details?: Record<string, unknown> }>;
+        notify: ReturnType<typeof vi.fn>;
+        complete: ReturnType<typeof vi.fn>;
+        find: ReturnType<typeof vi.fn>;
     }> {
         let authorize: Authorizer["authorize"] | undefined;
         const service = {
@@ -582,28 +587,45 @@ describe("AI judge Enforce authority seam (PIEXTENSIO-21)", () => {
         publishPermissionsService(service);
         publishedService = service;
 
-        const complete = vi.fn(async () => modelResponse());
+        const complete = vi.fn(async () => options.response ?? modelResponse());
+        const find = vi.fn(() => options.findResult);
+        const hasConfiguredAuth = vi.fn(() => options.authConfigured !== false);
+        const notify = vi.fn();
+        const sessionManager = fakeSessionManager();
         const ctx = {
             hasUI: true,
-            sessionManager: fakeSessionManager(),
+            sessionManager,
             model: {
-                id: "test-model",
-                provider: "test-provider",
+                id: "session-model",
+                provider: "session-provider",
                 api: "openai-codex-responses",
             } as Model<any>,
-            modelRegistry: { complete },
-            ui: { notify: vi.fn() },
+            modelRegistry: { complete, find, hasConfiguredAuth },
+            ui: { notify },
         } as unknown as ExtensionContext;
 
         const harness = createFakePi();
         extension(harness.pi);
+        writeConfig(options.config);
         harness.start(ctx);
         harness.ready();
         expect(authorize).toBeDefined();
 
+        const unit = options.command ?? "git push origin main";
+        const askDetails = ask();
+        askDetails.command = unit;
+        const request = askDetails.payload.request as { value: string };
+        request.value = unit;
+        const evidenceEntry = (
+            askDetails.payload as { evidence: ReadonlyArray<{ label: string; text: string }> }
+        ).evidence[0];
+        if (evidenceEntry !== undefined) {
+            evidenceEntry.text = `pnpm test && ${unit}`;
+        }
+
         const reviews: Array<{ event: string; details?: Record<string, unknown> }> = [];
         const verdict = await authorize!(
-            ask(),
+            askDetails,
             {
                 checkPermission: vi.fn(),
                 getToolPermission: vi.fn(),
@@ -614,45 +636,13 @@ describe("AI judge Enforce authority seam (PIEXTENSIO-21)", () => {
             },
         );
         harness.shutdown();
-        return { verdict, reviews };
+        return { verdict, reviews, notify, complete, find };
     }
 
-    it("defers in enforce mode when no promotion records exist", async () => {
-        const { verdict, reviews } = await runAsk();
-        expect(verdict).toEqual({ kind: "defer" });
-        expect(reviews).toMatchObject([
-            {
-                event: "ai_bash_judge.result",
-                details: expect.objectContaining({
-                    mode: "enforce",
-                    verdict: "allow",
-                    effectiveVerdict: "defer",
-                    authorityBlockedBy: "cohort_not_qualified",
-                }),
-            },
-        ]);
-    });
-
-    it("grants authority in enforce mode only with all three exact-identity records", async () => {
-        const identity = lifecycleIdentity();
-        for (const [kind, basis] of [
-            ["cohort_qualified", "cohort piextensio-test"],
-            ["owner_approval", "approved for test"],
-            ["activation", "activated for test"],
-        ] as const) {
-            expect(
-                appendPromotionRecord({
-                    agentDir: mockAgentDir.dir,
-                    record: {
-                        kind,
-                        candidateIdentity: identity,
-                        recordedAt: "2026-08-21T10:00:00Z",
-                        basis,
-                    },
-                }),
-            ).toBeNull();
-        }
-        const { verdict, reviews } = await runAsk();
+    it("grants authority in v2 enforce mode with no promotion records", async () => {
+        const { verdict, reviews } = await runAsk({
+            config: { version: 2, mode: "enforce" },
+        });
         expect(verdict).toEqual({ kind: "allow" });
         expect(reviews).toMatchObject([
             {
@@ -662,73 +652,227 @@ describe("AI judge Enforce authority seam (PIEXTENSIO-21)", () => {
                     verdict: "allow",
                     effectiveVerdict: "allow",
                     authorityBlockedBy: null,
+                    modelSource: "session",
                 }),
             },
         ]);
     });
 
-    it("defers in enforce mode when records exist for another identity", async () => {
-        const identity = { ...lifecycleIdentity(), model: "other-model" };
-        for (const kind of [
-            "cohort_qualified",
-            "owner_approval",
-            "activation",
-        ] as const) {
-            appendPromotionRecord({
-                agentDir: mockAgentDir.dir,
-                record: {
-                    kind,
-                    candidateIdentity: identity,
-                    recordedAt: "2026-08-21T10:00:00Z",
-                    basis: "other identity",
-                },
-            });
-        }
-        const { verdict, reviews } = await runAsk();
-        expect(verdict).toEqual({ kind: "defer" });
-        expect(reviews).toMatchObject([
-            {
-                event: "ai_bash_judge.result",
-                details: expect.objectContaining({
-                    effectiveVerdict: "defer",
-                    authorityBlockedBy: "cohort_not_qualified",
-                }),
-            },
-        ]);
-    });
-
-    it("never grants authority in shadow mode regardless of records", async () => {
-        writeFileSync(
-            join(mockAgentDir.dir, "pi-permission-ai-judge.config.json"),
-            JSON.stringify({ mode: "shadow" }),
-        );
-        const identity = lifecycleIdentity();
-        for (const kind of [
-            "cohort_qualified",
-            "owner_approval",
-            "activation",
-        ] as const) {
-            appendPromotionRecord({
-                agentDir: mockAgentDir.dir,
-                record: {
-                    kind,
-                    candidateIdentity: identity,
-                    recordedAt: "2026-08-21T10:00:00Z",
-                    basis: "shadow still defers",
-                },
-            });
-        }
-        const { verdict, reviews } = await runAsk();
+    it("downgrades v1 enforce to shadow with a migration diagnostic notification", async () => {
+        const { verdict, reviews, notify, complete } = await runAsk({
+            config: { mode: "enforce" },
+        });
         expect(verdict).toEqual({ kind: "defer" });
         expect(reviews).toMatchObject([
             {
                 event: "ai_bash_judge.result",
                 details: expect.objectContaining({
                     mode: "shadow",
+                    verdict: "allow",
                     effectiveVerdict: "defer",
                     authorityBlockedBy: "mode_shadow",
                 }),
             },
         ]);
+        const notified = notify.mock.calls.map((call) => String(call[0]));
+        expect(
+            notified.some((message) =>
+                /v1 enforce requires explicit migration|version 2/.test(message),
+            ),
+        ).toBe(true);
+        expect(complete).toHaveBeenCalledTimes(1);
+    });
+
+    it("defers immediately on a high-risk command in enforce mode without calling the model", async () => {
+        const { verdict, reviews, complete } = await runAsk({
+            config: { version: 2, mode: "enforce" },
+            command: "git clean -xfd",
+        });
+        expect(verdict).toEqual({ kind: "defer" });
+        expect(complete).not.toHaveBeenCalled();
+        expect(reviews).toMatchObject([
+            {
+                event: "ai_bash_judge.result",
+                details: expect.objectContaining({
+                    resultKind: "preflight_defer",
+                    verdict: null,
+                    effectiveVerdict: "defer",
+                    modelCalled: false,
+                    code: "high_risk_override",
+                    riskCategory: "data_loss",
+                    riskRule: expect.any(String),
+                }),
+            },
+        ]);
+    });
+
+    it("still calls the model on a high-risk command in shadow mode, records the override, and defers", async () => {
+        const { verdict, reviews, complete } = await runAsk({
+            config: { version: 2, mode: "shadow" },
+            command: "git clean -xfd",
+        });
+        expect(complete).toHaveBeenCalledTimes(1);
+        expect(verdict).toEqual({ kind: "defer" });
+        expect(reviews).toMatchObject([
+            {
+                event: "ai_bash_judge.result",
+                details: expect.objectContaining({
+                    resultKind: "judgment",
+                    verdict: "allow",
+                    effectiveVerdict: "defer",
+                    riskOverride: { category: "data_loss", rule: expect.any(String) },
+                }),
+            },
+        ]);
+    });
+
+    it("resolves a configured v2 judge model instead of the session model", async () => {
+        const { verdict, reviews, complete, find } = await runAsk({
+            config: {
+                version: 2,
+                mode: "enforce",
+                model: { provider: "fixed-provider", id: "fixed-model" },
+            },
+            findResult: {
+                id: "fixed-model",
+                provider: "fixed-provider",
+                api: "openai-codex-responses",
+            } as Model<any>,
+        });
+        expect(find).toHaveBeenCalledWith("fixed-provider", "fixed-model");
+        expect(complete).toHaveBeenCalledTimes(1);
+        expect((complete.mock.calls[0] as unknown[])[0]).toMatchObject({
+            id: "fixed-model",
+            provider: "fixed-provider",
+        });
+        expect(verdict).toEqual({ kind: "allow" });
+        expect(reviews[0]?.details).toMatchObject({
+            modelSource: "configured",
+            provider: "fixed-provider",
+            model: "fixed-model",
+        });
+    });
+
+    it("defers with judge_model_unavailable when a configured model cannot be resolved, without fallback", async () => {
+        const { verdict, reviews, complete } = await runAsk({
+            config: {
+                version: 2,
+                mode: "enforce",
+                model: { provider: "ghost-provider", id: "ghost-model" },
+            },
+            findResult: undefined,
+        });
+        expect(verdict).toEqual({ kind: "defer" });
+        expect(complete).not.toHaveBeenCalled();
+        expect(reviews).toMatchObject([
+            {
+                event: "ai_bash_judge.result",
+                details: expect.objectContaining({
+                    resultKind: "infrastructure_failure",
+                    code: "judge_model_unavailable",
+                    modelCalled: false,
+                    provider: "ghost-provider",
+                    model: "ghost-model",
+                }),
+            },
+        ]);
+    });
+
+    it("keeps riskOverride on the early judge_model_unavailable row for a high-risk shadow ask", async () => {
+        const { reviews } = await runAsk({
+            config: {
+                version: 2,
+                mode: "shadow",
+                model: { provider: "ghost-provider", id: "ghost-model" },
+            },
+            command: "git clean -xfd",
+            findResult: undefined,
+        });
+        expect(reviews[0]?.details).toMatchObject({
+            code: "judge_model_unavailable",
+            riskOverride: { category: "data_loss", rule: expect.any(String) },
+        });
+    });
+
+    it("defers with judge_model_unavailable when a configured model lacks auth", async () => {
+        const { verdict, reviews, complete } = await runAsk({
+            config: {
+                version: 2,
+                mode: "enforce",
+                model: { provider: "p", id: "m" },
+            },
+            findResult: { id: "m", provider: "p", api: "openai-codex-responses" } as Model<any>,
+            authConfigured: false,
+        });
+        expect(verdict).toEqual({ kind: "defer" });
+        expect(complete).not.toHaveBeenCalled();
+        expect(reviews[0]?.details).toMatchObject({
+            resultKind: "infrastructure_failure",
+            code: "judge_model_unavailable",
+        });
+    });
+
+    it("notifies once per session in v2 enforce mode with the judge model and risk contract", async () => {
+        let authorize: Authorizer["authorize"] | undefined;
+        const service = {
+            registerAuthorizer: vi.fn((_name, callback) => {
+                authorize = callback;
+                return vi.fn();
+            }),
+            checkPermission: vi.fn(),
+            getToolPermission: vi.fn(),
+        } as unknown as PermissionsService;
+        publishPermissionsService(service);
+        publishedService = service;
+
+        const complete = vi.fn(async () => modelResponse());
+        const notify = vi.fn();
+        const ctx = {
+            hasUI: true,
+            sessionManager: fakeSessionManager(),
+            model: {
+                id: "session-model",
+                provider: "session-provider",
+                api: "openai-codex-responses",
+            } as Model<any>,
+            modelRegistry: { complete, find: vi.fn(), hasConfiguredAuth: vi.fn(() => true) },
+            ui: { notify },
+        } as unknown as ExtensionContext;
+
+        const harness = createFakePi();
+        extension(harness.pi);
+        writeConfig({ version: 2, mode: "enforce" });
+        harness.start(ctx);
+        harness.ready();
+
+        const enforceNotice = notify.mock.calls.filter((call) =>
+            /Enforce/i.test(String(call[0])),
+        );
+        expect(enforceNotice).toHaveLength(1);
+        expect(String(enforceNotice[0]?.[0])).toContain(
+            "session-provider/session-model",
+        );
+        expect(String(enforceNotice[0]?.[0])).toMatch(/risk/i);
+
+        // Two more asks must not repeat the notification.
+        for (let i = 0; i < 2; i += 1) {
+            await authorize!(ask(), { checkPermission: vi.fn(), getToolPermission: vi.fn() }, {
+                review: vi.fn(),
+                debug: vi.fn(),
+            });
+        }
+        expect(
+            notify.mock.calls.filter((call) => /Enforce/i.test(String(call[0]))),
+        ).toHaveLength(1);
+        harness.shutdown();
+    });
+
+    it("does not show the enforce notification in shadow mode", async () => {
+        const { notify } = await runAsk({
+            config: { version: 2, mode: "shadow" },
+        });
+        expect(
+            notify.mock.calls.filter((call) => /Enforce/i.test(String(call[0]))),
+        ).toHaveLength(0);
     });
 });

@@ -1,4 +1,14 @@
 
+> **Status note (2026-08-21):** superseded as a runtime governance
+> mechanism by [ADR 0008](../adr/0008-enforce-user-assumed-risk.md)
+> (PIEXTENSIO-23) — Enforce authority no longer consumes promotion records
+> or cohort qualification. This document is preserved unchanged as
+> historical audit material. It also carries a recorded protocol
+> contradiction (frozen `earliest report asOf 22:05Z` vs the report's
+> `asOf 21:15:06Z` and a PASS recorded at `21:20Z`; `-02` frozen sections
+> incorporated by reference are no longer in this file) — noted in ADR 0008
+> as a legacy-mechanism limitation, not rewritten.
+
 ## Outcome of `piextensio-22-v4-gpt56sol-20260820-03`: FAIL (activity floor), 87 enrollments
 
 Recorded `2026-08-20T18:50:00Z`, after the window closed at `13:20:00Z`.
