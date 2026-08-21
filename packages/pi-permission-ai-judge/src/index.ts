@@ -8,12 +8,15 @@ import {
     getPermissionsService,
     PERMISSIONS_READY_CHANNEL,
     type PromptPermissionDetails,
+    type AuthorizerLog,
+    type AuthorizerVerdict,
 } from "@gotgenes/pi-permission-system";
 import { buildBashJudgmentEvidence } from "./evidence";
 import {
     createModelAvailability,
     requestStructuredVerdict,
     type ModelAvailability,
+    type ModelAttempt,
 } from "./model";
 import { PROMPT_VERSION, TOOL_SCHEMA_VERSION } from "./prompt";
 import { loadJudgeConfig, type EffectiveJudgeConfig } from "./config";
@@ -31,6 +34,7 @@ import {
     loadModelCatalog,
     DEFAULT_CATALOG_PATH,
     type ModelCatalogClassification,
+    type LoadedModelCatalog,
 } from "./catalog";
 
 const LINK_NAME = "ai-bash-judge";
@@ -166,6 +170,384 @@ function resolveJudgeModel(
     return { kind: "model", model: found, source: "configured" };
 }
 
+/** Per-call emission context shared by the result emitters. */
+interface EmitContext {
+    readonly captured: RootSession;
+    readonly details: PromptPermissionDetails;
+    readonly startedAt: number;
+    readonly emitResult: (record: Record<string, unknown>) => void;
+}
+
+/** Shared identity/cohort fields; latency is measured at emit time. */
+function emitBase(ctx: EmitContext): Record<string, unknown> {
+    return resultBase(
+        ctx.captured.judgeRuntimeId,
+        ctx.details,
+        ctx.startedAt,
+        ctx.captured.config,
+    );
+}
+
+/**
+ * Emit a `preflight_defer` result (fail-closed before the model runs) and
+ * return the matching defer verdict.
+ */
+function preflightDefer(
+    ctx: EmitContext,
+    code: string,
+    eq: Record<string, unknown>,
+    extra: Record<string, unknown> = {},
+): AuthorizerVerdict {
+    ctx.emitResult({
+        ...emitBase(ctx),
+        resultKind: "preflight_defer",
+        verdict: null,
+        effectiveVerdict: "defer",
+        modelCalled: false,
+        code,
+        ...extra,
+        evidenceQuality: eq,
+    });
+    return { kind: "defer" };
+}
+
+/**
+ * Emit an `infrastructure_failure` result with a defer verdict (e.g. the
+ * judge model cannot be resolved).
+ */
+function infrastructureDefer(
+    ctx: EmitContext,
+    code: string,
+    eq: Record<string, unknown>,
+    extra: Record<string, unknown> = {},
+): AuthorizerVerdict {
+    ctx.emitResult({
+        ...emitBase(ctx),
+        resultKind: "infrastructure_failure",
+        verdict: null,
+        effectiveVerdict: "defer",
+        modelCalled: false,
+        code,
+        ...extra,
+        evidenceQuality: eq,
+    });
+    return { kind: "defer" };
+}
+
+/** Emit the `judgment` result for a model call that returned a verdict. */
+function emitJudgmentResult(
+    ctx: EmitContext,
+    result: Extract<ModelAttempt, { readonly kind: "judgment" }>,
+    conversation: ConversationEvidence,
+    effectiveVerdict: "allow" | "defer",
+    authorityBlockedBy: string | null,
+    modelSource: "configured" | "session",
+    risk: HighRiskMatch | undefined,
+): void {
+    ctx.emitResult({
+        ...emitBase(ctx),
+        resultKind: "judgment",
+        verdict: result.verdict,
+        effectiveVerdict,
+        authorityBlockedBy,
+        modelCalled: true,
+        code: null,
+        modelSource,
+        provider: result.metadata.provider,
+        model: result.metadata.model,
+        api: result.metadata.api,
+        riskOverride: risk ?? null,
+        // Log keys deliberately avoid the substring
+        // "token": permission-system masks any key matching
+        // /token/i (structural key-name redaction), which
+        // would erase usage telemetry from the review log.
+        inputUsage: result.inputTokens,
+        outputUsage: result.outputTokens,
+        modelLatencyMs: result.modelLatencyMs,
+        reasonLength: reasonLength(result.reason),
+        evidenceQuality: evidenceQuality(true, conversation, ctx.captured.getCwd()),
+    });
+}
+
+/** Emit the post-model `infrastructure_failure` result under authority. */
+function emitInfrastructureResult(
+    ctx: EmitContext,
+    result: Extract<ModelAttempt, { readonly kind: "infrastructure_failure" }>,
+    conversation: ConversationEvidence,
+    effectiveVerdict: "allow" | "defer",
+    authorityBlockedBy: string | null,
+    modelSource: "configured" | "session",
+    risk: HighRiskMatch | undefined,
+): void {
+    ctx.emitResult({
+        ...emitBase(ctx),
+        resultKind: "infrastructure_failure",
+        verdict: null,
+        effectiveVerdict,
+        authorityBlockedBy,
+        modelCalled: result.modelCalled,
+        code: result.code,
+        modelSource,
+        provider: result.metadata?.provider ?? null,
+        model: result.metadata?.model ?? null,
+        api: result.metadata?.api ?? null,
+        riskOverride: risk ?? null,
+        inputUsage: result.inputTokens ?? null,
+        outputUsage: result.outputTokens ?? null,
+        modelLatencyMs: result.modelLatencyMs,
+        evidenceQuality: evidenceQuality(true, conversation, ctx.captured.getCwd()),
+    });
+}
+
+/**
+ * One authorize call: enroll, preflight-gate, judge, and enforce the truth
+ * table. Extracted from the registerAuthorizer callback so each stage reads
+ * linearly; any exception fails closed (defer) without logging raw errors.
+ */
+async function judgeAuthorize(
+    captured: RootSession,
+    details: PromptPermissionDetails,
+    log: AuthorizerLog,
+): Promise<AuthorizerVerdict> {
+    const startedAt = Date.now();
+    const sink: ReviewSink = createReviewSink({
+        log,
+        reviewLogEnabled: captured.reviewLogEnabled,
+    });
+    try {
+        const ctx: EmitContext = {
+            captured,
+            details,
+            startedAt,
+            emitResult: (record) => {
+                sink.review("ai_bash_judge.result", record);
+                captured.auditLog.audit("ai_bash_judge.result", record);
+            },
+        };
+
+        // Judge-owned enrollment record (ADR 0006 denominator:
+        // asks the Judge received, per its own audit log).
+        // Non-bash surfaces are ignored below without a shadow
+        // row; they also do not enroll (v0.1 cohort is bash-only).
+        if (
+            details.forwarding !== undefined ||
+            details.payload.kind === "forwarded" ||
+            details.payload.kind === "bash"
+        ) {
+            captured.auditLog.audit("ai_bash_judge.enrolled", {
+                requestId: details.requestId,
+                origin:
+                    details.forwarding !== undefined ||
+                        details.payload.kind === "forwarded"
+                        ? "forwarded"
+                        : "local",
+                surface: "bash",
+                command:
+                    details.payload.kind === "bash" &&
+                        details.payload.request?.value
+                        ? details.payload.request.value
+                        : (details.command ?? null),
+            });
+        }
+        // Forwarded asks do not carry a structured child full
+        // command in permission-system 25.3/25.4. Never parse the
+        // legacy prose. The deferral is recorded so the request
+        // stays visible in the offline denominator instead of
+        // silently vanishing.
+        if (
+            details.forwarding !== undefined ||
+            details.payload.kind === "forwarded"
+        ) {
+            return preflightDefer(
+                ctx,
+                "missing_structured_input",
+                evidenceQuality(false, EMPTY_CONVERSATION, "", false),
+            );
+        }
+
+        // Ignore unrelated permission surfaces without producing a
+        // Shadow row or invoking the model: the v0.1 cohort selects
+        // accessSurface = bash only.
+        if (details.payload.kind !== "bash") {
+            return { kind: "defer" };
+        }
+
+        if (captured.getSessionId() !== captured.expectedSessionId) {
+            return preflightDefer(
+                ctx,
+                "session_ownership_unproven",
+                evidenceQuality(false, EMPTY_CONVERSATION, ""),
+            );
+        }
+
+        const evidence = buildBashJudgmentEvidence(details);
+        if (evidence === undefined) {
+            return preflightDefer(
+                ctx,
+                "invalid_evidence",
+                evidenceQuality(false, EMPTY_CONVERSATION, ""),
+            );
+        }
+
+        // Built-in high-risk override (ADR 0008): clear-cut
+        // irreversible/system shapes always defer. In Enforce the
+        // model is skipped entirely; in Shadow it still runs for
+        // quality observation and the override is recorded.
+        const risk: HighRiskMatch | undefined = classifyHighRisk(
+            evidence.fullCommand,
+        );
+        if (risk !== undefined && captured.config.mode === "enforce") {
+            return preflightDefer(
+                ctx,
+                "high_risk_override",
+                evidenceQuality(true, EMPTY_CONVERSATION, captured.getCwd()),
+                { riskCategory: risk.category, riskRule: risk.rule },
+            );
+        }
+
+        // Per-request judge-model resolution (PIEXTENSIO-3 cat.3
+        // for the session model; ADR 0008 for a configured fixed
+        // model). A configured model that cannot be resolved is
+        // an observable infrastructure failure — never a silent
+        // fallback to the session model.
+        const resolved = resolveJudgeModel(
+            captured.config,
+            captured.getModel(),
+            captured.modelRegistry,
+        );
+        if (resolved.kind === "unavailable") {
+            return infrastructureDefer(
+                ctx,
+                "judge_model_unavailable",
+                evidenceQuality(true, EMPTY_CONVERSATION, captured.getCwd()),
+                {
+                    provider: captured.config.judgeModel?.provider ?? null,
+                    model: captured.config.judgeModel?.id ?? null,
+                    api: null,
+                    riskOverride: risk ?? null,
+                },
+            );
+        }
+        const modelSource = resolved.source;
+        const availability: ModelAvailability = createModelAvailability(
+            resolved.model,
+            captured.modelRegistry,
+        );
+        // Conversation evidence is captured at ask time from the
+        // live serving branch, not at session start: the newest
+        // user intent is the ask's intent.
+        const conversation: ConversationEvidence =
+            buildConversationEvidence(captured.conversation);
+        const result = await requestStructuredVerdict(
+            availability,
+            evidence,
+            captured.shutdown.signal,
+            captured.config.timeoutMs,
+            conversation,
+        );
+
+        // Enforce truth table (PIEXTENSIO-3 cat.4 / M5; ADR 0008):
+        // the fail-closed runtime health gates — audit health,
+        // telemetry, result kind, verdict, review
+        // acknowledgement, generation currency — are the single
+        // authority seam; the retired promotion gates are no
+        // longer inputs. reviewAcknowledged is true in the ADR
+        // 0006 sense: the Judge-owned audit write for this result
+        // happens before the authority return, and a failed write
+        // flips auditHealthy sticky-unhealthy, closing authority
+        // for every later ask.
+        const gateState: EnforceGateState = {
+            auditHealthy: captured.auditLog.healthy(),
+            telemetryHealth: sink.health(),
+            resultKind:
+                result.kind === "judgment"
+                    ? "judgment"
+                    : result.kind,
+            verdict:
+                result.kind === "judgment" ? result.verdict : null,
+            reviewAcknowledged: true,
+            generationCurrent: !captured.shutdown.signal.aborted,
+            mode: captured.config.mode,
+        };
+        const authority = evaluateEnforceAuthority(gateState);
+        const effectiveVerdict =
+            authority.kind === "allow" ? "allow" : "defer";
+        const authorityBlockedBy =
+            authority.kind === "allow" ? null : authority.blockedBy;
+
+        if (result.kind === "judgment") {
+            emitJudgmentResult(
+                ctx, result, conversation,
+                effectiveVerdict, authorityBlockedBy, modelSource, risk,
+            );
+        } else {
+            emitInfrastructureResult(
+                ctx, result, conversation,
+                effectiveVerdict, authorityBlockedBy, modelSource, risk,
+            );
+        }
+
+        return authority.kind === "allow"
+            ? { kind: "allow" }
+            : { kind: "defer" };
+    } catch {
+        // A link exception would abort the whole authority chain.
+        // Keep provider/payload/session failures fail-closed and do
+        // not include raw errors or authorization evidence in logs.
+        sink.debug("ai_bash_judge.exception");
+        return { kind: "defer" };
+    }
+}
+
+/**
+ * One non-blocking session notice in Enforce mode: the risk contract and
+ * the effective judge model (ADR 0008). Not repeated per ask. The advisory
+ * model catalog (PIEXTENSIO-24) only annotates this notice — it never gates
+ * authority.
+ */
+function notifyEnforceActive(
+    notify: (message: string, kind: "info" | "warning") => void,
+    config: EffectiveJudgeConfig,
+    sessionModel: Model<any> | undefined,
+    catalog: LoadedModelCatalog,
+): void {
+    const configured = config.judgeModel;
+    let judgeModelDescription: string;
+    let classification: ModelCatalogClassification | null;
+    if (configured !== undefined) {
+        judgeModelDescription = `${configured.provider}/${configured.id} (configured)`;
+        classification = classifyModel(
+            catalog,
+            configured.provider,
+            configured.id,
+        );
+    } else {
+        if (sessionModel === undefined) {
+            judgeModelDescription =
+                "the current session model (none resolved yet)";
+            classification = null;
+        } else {
+            judgeModelDescription = `${sessionModel.provider}/${sessionModel.id} (current session model)`;
+            classification = classifyModel(
+                catalog,
+                sessionModel.provider,
+                sessionModel.id,
+            );
+        }
+    }
+    const catalogNote =
+        classification === "unlisted"
+            ? " This model is untested in the advisory catalog — used at your own risk."
+            : classification === "deprecated" || classification === "revoked"
+              ? ` Advisory catalog status: ${classification}.`
+              : "";
+    notify(
+        `ai-bash-judge Enforce active: ${judgeModelDescription} judges Bash asks; allow skips the dialog — you accept the risk of model misjudgment (ADR 0008). High-risk shapes (irreversible, publish, system, credentials) always ask.${catalogNote}`,
+        "info",
+    );
+}
+
+
 /** Register a Shadow-only structured-output judge for local native Bash asks. */
 export default function permissionAiJudge(pi: ExtensionAPI): void {
     let root: RootSession | undefined;
@@ -184,284 +566,8 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
         const captured = root;
         disposeAuthorizer = service.registerAuthorizer(
             LINK_NAME,
-            async (details, _query, log) => {
-                const startedAt = Date.now();
-                const sink: ReviewSink = createReviewSink({
-                    log,
-                    reviewLogEnabled: captured.reviewLogEnabled,
-                });
-                try {
-                    // Judge-owned enrollment record (ADR 0006 denominator:
-                    // asks the Judge received, per its own audit log).
-                    // Non-bash surfaces are ignored below without a shadow
-                    // row; they also do not enroll (v0.1 cohort is bash-only).
-                    if (
-                        details.forwarding !== undefined ||
-                        details.payload.kind === "forwarded" ||
-                        details.payload.kind === "bash"
-                    ) {
-                        captured.auditLog.audit("ai_bash_judge.enrolled", {
-                            requestId: details.requestId,
-                            origin:
-                                details.forwarding !== undefined ||
-                                    details.payload.kind === "forwarded"
-                                    ? "forwarded"
-                                    : "local",
-                            surface: "bash",
-                            command:
-                                details.payload.kind === "bash" &&
-                                    details.payload.request?.value
-                                    ? details.payload.request.value
-                                    : (details.command ?? null),
-                        });
-                    }
-                    const emitResult = (record: Record<string, unknown>): void => {
-                        sink.review("ai_bash_judge.result", record);
-                        captured.auditLog.audit("ai_bash_judge.result", record);
-                    };
-                    // Forwarded asks do not carry a structured child full
-                    // command in permission-system 25.3/25.4. Never parse the
-                    // legacy prose. The deferral is recorded so the request
-                    // stays visible in the offline denominator instead of
-                    // silently vanishing.
-                    if (
-                        details.forwarding !== undefined ||
-                        details.payload.kind === "forwarded"
-                    ) {
-                        emitResult({
-                            ...resultBase(
-                                captured.judgeRuntimeId,
-                                details,
-                                startedAt,
-                                captured.config,
-                            ),
-                            resultKind: "preflight_defer",
-                            verdict: null,
-                            effectiveVerdict: "defer",
-                            modelCalled: false,
-                            code: "missing_structured_input",
-                            evidenceQuality: evidenceQuality(false, EMPTY_CONVERSATION, "", false),
-                        });
-                        return { kind: "defer" };
-                    }
-
-                    // Ignore unrelated permission surfaces without producing a
-                    // Shadow row or invoking the model: the v0.1 cohort selects
-                    // accessSurface = bash only.
-                    if (details.payload.kind !== "bash") {
-                        return { kind: "defer" };
-                    }
-
-                    if (
-                        captured.getSessionId() !== captured.expectedSessionId
-                    ) {
-                        emitResult({
-                            ...resultBase(
-                                captured.judgeRuntimeId,
-                                details,
-                                startedAt,
-                                captured.config,
-                            ),
-                            resultKind: "preflight_defer",
-                            verdict: null,
-                            effectiveVerdict: "defer",
-                            modelCalled: false,
-                            code: "session_ownership_unproven",
-                            evidenceQuality: evidenceQuality(false, EMPTY_CONVERSATION, ""),
-                        });
-                        return { kind: "defer" };
-                    }
-
-                    const evidence = buildBashJudgmentEvidence(details);
-                    if (evidence === undefined) {
-                        emitResult({
-                            ...resultBase(
-                                captured.judgeRuntimeId,
-                                details,
-                                startedAt,
-                                captured.config,
-                            ),
-                            resultKind: "preflight_defer",
-                            verdict: null,
-                            effectiveVerdict: "defer",
-                            modelCalled: false,
-                            code: "invalid_evidence",
-                            evidenceQuality: evidenceQuality(false, EMPTY_CONVERSATION, ""),
-                        });
-                        return { kind: "defer" };
-                    }
-
-                    // Built-in high-risk override (ADR 0008): clear-cut
-                    // irreversible/system shapes always defer. In Enforce the
-                    // model is skipped entirely; in Shadow it still runs for
-                    // quality observation and the override is recorded.
-                    const risk: HighRiskMatch | undefined = classifyHighRisk(
-                        evidence.fullCommand,
-                    );
-                    if (risk !== undefined && captured.config.mode === "enforce") {
-                        emitResult({
-                            ...resultBase(
-                                captured.judgeRuntimeId,
-                                details,
-                                startedAt,
-                                captured.config,
-                            ),
-                            resultKind: "preflight_defer",
-                            verdict: null,
-                            effectiveVerdict: "defer",
-                            modelCalled: false,
-                            code: "high_risk_override",
-                            riskCategory: risk.category,
-                            riskRule: risk.rule,
-                            evidenceQuality: evidenceQuality(true, EMPTY_CONVERSATION, captured.getCwd()),
-                        });
-                        return { kind: "defer" };
-                    }
-
-                    // Per-request judge-model resolution (PIEXTENSIO-3 cat.3
-                    // for the session model; ADR 0008 for a configured fixed
-                    // model). A configured model that cannot be resolved is
-                    // an observable infrastructure failure — never a silent
-                    // fallback to the session model.
-                    const resolved = resolveJudgeModel(
-                        captured.config,
-                        captured.getModel(),
-                        captured.modelRegistry,
-                    );
-                    if (resolved.kind === "unavailable") {
-                        emitResult({
-                            ...resultBase(
-                                captured.judgeRuntimeId,
-                                details,
-                                startedAt,
-                                captured.config,
-                            ),
-                            resultKind: "infrastructure_failure",
-                            verdict: null,
-                            effectiveVerdict: "defer",
-                            modelCalled: false,
-                            code: "judge_model_unavailable",
-                            provider: captured.config.judgeModel?.provider ?? null,
-                            model: captured.config.judgeModel?.id ?? null,
-                            api: null,
-                            riskOverride: risk ?? null,
-                            evidenceQuality: evidenceQuality(true, EMPTY_CONVERSATION, captured.getCwd()),
-                        });
-                        return { kind: "defer" };
-                    }
-                    const modelSource = resolved.source;
-                    const availability: ModelAvailability = createModelAvailability(
-                        resolved.model,
-                        captured.modelRegistry,
-                    );
-                    // Conversation evidence is captured at ask time from the
-                    // live serving branch, not at session start: the newest
-                    // user intent is the ask's intent.
-                    const conversation: ConversationEvidence =
-                        buildConversationEvidence(captured.conversation);
-                    const result = await requestStructuredVerdict(
-                        availability,
-                        evidence,
-                        captured.shutdown.signal,
-                        captured.config.timeoutMs,
-                        conversation,
-                    );
-
-                    // Enforce truth table (PIEXTENSIO-3 cat.4 / M5; ADR 0008):
-                    // the fail-closed runtime health gates — audit health,
-                    // telemetry, result kind, verdict, review
-                    // acknowledgement, generation currency — are the single
-                    // authority seam; the retired promotion gates are no
-                    // longer inputs. reviewAcknowledged is true in the ADR
-                    // 0006 sense: the Judge-owned audit write for this result
-                    // happens before the authority return, and a failed write
-                    // flips auditHealthy sticky-unhealthy, closing authority
-                    // for every later ask.
-                    const gateState: EnforceGateState = {
-                        auditHealthy: captured.auditLog.healthy(),
-                        telemetryHealth: sink.health(),
-                        resultKind:
-                            result.kind === "judgment"
-                                ? "judgment"
-                                : result.kind,
-                        verdict:
-                            result.kind === "judgment" ? result.verdict : null,
-                        reviewAcknowledged: true,
-                        generationCurrent: !captured.shutdown.signal.aborted,
-                        mode: captured.config.mode,
-                    };
-                    const authority = evaluateEnforceAuthority(gateState);
-                    const effectiveVerdict =
-                        authority.kind === "allow" ? "allow" : "defer";
-                    const authorityBlockedBy =
-                        authority.kind === "allow" ? null : authority.blockedBy;
-
-                    if (result.kind === "judgment") {
-                        emitResult({
-                            ...resultBase(
-                                captured.judgeRuntimeId,
-                                details,
-                                startedAt,
-                                captured.config,
-                            ),
-                            resultKind: "judgment",
-                            verdict: result.verdict,
-                            effectiveVerdict,
-                            authorityBlockedBy,
-                            modelCalled: true,
-                            code: null,
-                            modelSource,
-                            provider: result.metadata.provider,
-                            model: result.metadata.model,
-                            api: result.metadata.api,
-                            riskOverride: risk ?? null,
-                            // Log keys deliberately avoid the substring
-                            // "token": permission-system masks any key matching
-                            // /token/i (structural key-name redaction), which
-                            // would erase usage telemetry from the review log.
-                            inputUsage: result.inputTokens,
-                            outputUsage: result.outputTokens,
-                            modelLatencyMs: result.modelLatencyMs,
-                            reasonLength: reasonLength(result.reason),
-                            evidenceQuality: evidenceQuality(true, conversation, captured.getCwd()),
-                        });
-                    } else {
-                        emitResult({
-                            ...resultBase(
-                                captured.judgeRuntimeId,
-                                details,
-                                startedAt,
-                                captured.config,
-                            ),
-                            resultKind: "infrastructure_failure",
-                            verdict: null,
-                            effectiveVerdict,
-                            authorityBlockedBy,
-                            modelCalled: result.modelCalled,
-                            code: result.code,
-                            modelSource,
-                            provider: result.metadata?.provider ?? null,
-                            model: result.metadata?.model ?? null,
-                            api: result.metadata?.api ?? null,
-                            riskOverride: risk ?? null,
-                            inputUsage: result.inputTokens ?? null,
-                            outputUsage: result.outputTokens ?? null,
-                            modelLatencyMs: result.modelLatencyMs,
-                            evidenceQuality: evidenceQuality(true, conversation, captured.getCwd()),
-                        });
-                    }
-
-                    return authority.kind === "allow"
-                        ? { kind: "allow" }
-                        : { kind: "defer" };
-                } catch {
-                    // A link exception would abort the whole authority chain.
-                    // Keep provider/payload/session failures fail-closed and do
-                    // not include raw errors or authorization evidence in logs.
-                    sink.debug("ai_bash_judge.exception");
-                    return { kind: "defer" };
-                }
-            },
+            async (details, _query, log) =>
+                judgeAuthorize(captured, details, log),
         );
     }
 
@@ -513,40 +619,11 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
             );
         }
         if (root.config.mode === "enforce") {
-            const configured = root.config.judgeModel;
-            let judgeModelDescription: string;
-            let classification: ModelCatalogClassification | null;
-            if (configured !== undefined) {
-                judgeModelDescription = `${configured.provider}/${configured.id} (configured)`;
-                classification = classifyModel(
-                    catalogResult.catalog,
-                    configured.provider,
-                    configured.id,
-                );
-            } else {
-                const sessionModel = ctx.model;
-                if (sessionModel === undefined) {
-                    judgeModelDescription =
-                        "the current session model (none resolved yet)";
-                    classification = null;
-                } else {
-                    judgeModelDescription = `${sessionModel.provider}/${sessionModel.id} (current session model)`;
-                    classification = classifyModel(
-                        catalogResult.catalog,
-                        sessionModel.provider,
-                        sessionModel.id,
-                    );
-                }
-            }
-            const catalogNote =
-                classification === "unlisted"
-                    ? " This model is untested in the advisory catalog — used at your own risk."
-                    : classification === "deprecated" || classification === "revoked"
-                      ? ` Advisory catalog status: ${classification}.`
-                      : "";
-            ctx.ui.notify(
-                `ai-bash-judge Enforce active: ${judgeModelDescription} judges Bash asks; allow skips the dialog — you accept the risk of model misjudgment (ADR 0008). High-risk shapes (irreversible, publish, system, credentials) always ask.${catalogNote}`,
-                "info",
+            notifyEnforceActive(
+                (message, kind) => ctx.ui.notify(message, kind),
+                root.config,
+                ctx.model,
+                catalogResult.catalog,
             );
         }
         tryRegister();

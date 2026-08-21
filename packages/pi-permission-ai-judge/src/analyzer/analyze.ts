@@ -187,17 +187,16 @@ function humanFromResolution(
 }
 
 /**
- * Reconstruct the PIEXTENSIO-9 join over a review event stream.
- *
- * Input is the raw parsed JSONL of one permission review log. File order is
- * authoritative: a human decision must appear after the judge result in
- * append order. Enrollments with no result remain visible in
- * `metrics.completionCoverage` and their dispositions are omitted from the
- * joined set without a quarantine entry (missing outcomes are counted, not
- * invented).
+ * Phase 1: collect per-requestId first-seen records in append order.
  */
-export function analyzeShadowReviewLog(events: readonly ReviewEvent[]): AnalyzeResult {
-    // Phase 1: collect per-requestId first-seen records in append order.
+interface CollectedEvents {
+    readonly enrolled: ReadonlySet<string>;
+    readonly results: ReadonlyMap<string, ReviewEvent[]>;
+    readonly terminal: ReadonlyMap<string, ReviewEvent[]>;
+    readonly linkMarkers: ReadonlySet<string>;
+}
+
+function collectReviewEvents(events: readonly ReviewEvent[]): CollectedEvents {
     const enrolled = new Set<string>();
     const results = new Map<string, ReviewEvent[]>();
     const terminal = new Map<string, ReviewEvent[]>();
@@ -238,6 +237,142 @@ export function analyzeShadowReviewLog(events: readonly ReviewEvent[]): AnalyzeR
                 break;
         }
     }
+    return { enrolled, results, terminal, linkMarkers };
+}
+
+/** Outcome of joining one terminal request against its judge result. */
+type JoinOutcome =
+    | { readonly kind: "joined"; readonly row: JoinedRow }
+    | { readonly kind: "quarantined"; readonly category: QuarantineCategory }
+    | { readonly kind: "skipped" };
+
+/**
+ * Phase 2: join one enrolled request's terminal permission event against
+ * its judge result. Guards run in append-order integrity order; the first
+ * failure quarantines with an explicit category.
+ */
+function joinTerminalRequest(
+    requestId: string,
+    events: readonly ReviewEvent[],
+    collected: CollectedEvents,
+): JoinOutcome {
+    const resultList = collected.results.get(requestId) ?? [];
+    const terminalList = collected.terminal.get(requestId) ?? [];
+
+    if (resultList.length > 1) {
+        return { kind: "quarantined", category: "duplicate_result" };
+    }
+    const result = resultList[0];
+    if (result === undefined) {
+        // No result yet (or a lost write): counted as a coverage gap in
+        // the metrics, not quarantined as an integrity fault.
+        return { kind: "skipped" };
+    }
+    // The terminal permission_request entry must appear after the judge
+    // result in append order. The terminal list is collected from the
+    // same stream, so compare first-seen indices.
+    const resultIndex = events.indexOf(result);
+    const terminalEvents = terminalList.filter(
+        (t) => events.indexOf(t) > resultIndex,
+    );
+    if (terminalEvents.length === 0) {
+        return { kind: "quarantined", category: "human_before_result" };
+    }
+    if (terminalEvents.length > 1) {
+        // Upstream's forwarded decision path double-writes the terminal
+        // event with the same requestId and resolution in adjacent file
+        // order (round 1: two `approved` or two `denied_with_reason`
+        // rows in the same second). Identical-resolution duplicates are
+        // that pattern, not an integrity fault: collapse to the first
+        // row. Conflicting resolutions stay quarantined — the analyzer
+        // must never pick a convenient outcome among alternatives
+        // (PIEXTENSIO-9).
+        const distinct = new Set(
+            terminalEvents.map((t) => asString(t.resolution) ?? ""),
+        );
+        if (distinct.size > 1) {
+            return { kind: "quarantined", category: "multiple_human_decisions" };
+        }
+    }
+    const terminalEvent = terminalEvents[0] as ReviewEvent;
+    const human = humanFromResolution(
+        asString(terminalEvent.resolution) ?? "",
+        terminalEvent.denialReason,
+    );
+    if ("error" in human) {
+        return { kind: "quarantined", category: "terminal_event_unreadable" };
+    }
+
+    return {
+        kind: "joined",
+        row: buildJoinedRow(requestId, result, human, collected.linkMarkers),
+    };
+}
+
+function buildJoinedRow(
+    requestId: string,
+    result: ReviewEvent,
+    human: HumanDecision,
+    linkMarkers: ReadonlySet<string>,
+): JoinedRow {
+    const state = human.state;
+    let attribution: JoinedRow["humanAttribution"];
+    if (
+        state === "approved_for_session" ||
+        state === "approved_for_serving_session"
+    ) {
+        attribution = "session_state";
+    } else if (linkMarkers.has(requestId)) {
+        attribution = "unproven";
+    } else {
+        attribution = "no_link_marker";
+    }
+    // `unproven` rows (a plain `approved` sharing the request with a link
+    // allow) cannot be attributed to the human under the reconstructed
+    // rule; they stay joined but never enter the comparison matrix.
+
+    return {
+        requestId,
+        judgeRuntimeId: asString(result.judgeRuntimeId),
+        resultKind:
+            result.resultKind === "judgment" ||
+                result.resultKind === "preflight_defer" ||
+                result.resultKind === "infrastructure_failure"
+                ? result.resultKind
+                : "infrastructure_failure",
+        verdict:
+            result.verdict === "allow" ||
+                result.verdict === "deny" ||
+                result.verdict === "defer"
+                ? result.verdict
+                : null,
+        code: asString(result.code),
+        modelCalled: asBoolean(result.modelCalled) ?? false,
+        provider: asString(result.provider),
+        model: asString(result.model),
+        origin: asString(result.origin),
+        judgeLatencyMs: asOptionalNumber(result.judgeLatencyMs),
+        modelLatencyMs: asOptionalNumber(result.modelLatencyMs),
+        inputUsage: asOptionalNumber(result.inputUsage),
+        outputUsage: asOptionalNumber(result.outputUsage),
+        reasonLength: asOptionalNumber(result.reasonLength),
+        human,
+        humanAttribution: attribution,
+    };
+}
+
+/**
+ * Reconstruct the PIEXTENSIO-9 join over a review event stream.
+ *
+ * Input is the raw parsed JSONL of one permission review log. File order is
+ * authoritative: a human decision must appear after the judge result in
+ * append order. Enrollments with no result remain visible in
+ * `metrics.completionCoverage` and their dispositions are omitted from the
+ * joined set without a quarantine entry (missing outcomes are counted, not
+ * invented).
+ */
+export function analyzeShadowReviewLog(events: readonly ReviewEvent[]): AnalyzeResult {
+    const collected = collectReviewEvents(events);
 
     const dispositions: Disposition[] = [];
     const joined: JoinedRow[] = [];
@@ -247,122 +382,32 @@ export function analyzeShadowReviewLog(events: readonly ReviewEvent[]): AnalyzeR
         dispositions.push({ kind: "quarantined", category });
     };
 
-    const terminalIds = [...terminal.keys()];
-    for (const requestId of terminalIds) {
-        if (!enrolled.has(requestId)) {
+    for (const requestId of collected.terminal.keys()) {
+        if (!collected.enrolled.has(requestId)) {
             continue;
         }
-        const resultList = results.get(requestId) ?? [];
-        const terminalList = terminal.get(requestId) ?? [];
-
-        if (resultList.length > 1) {
-            quarantine("duplicate_result");
-            continue;
+        const outcome = joinTerminalRequest(requestId, events, collected);
+        if (outcome.kind === "quarantined") {
+            quarantine(outcome.category);
+        } else if (outcome.kind === "joined") {
+            joined.push(outcome.row);
+            dispositions.push({ kind: "joined", row: outcome.row });
         }
-        const result = resultList[0];
-        if (result === undefined) {
-            // No result yet (or a lost write): counted as a coverage gap in
-            // the metrics, not quarantined as an integrity fault.
-            continue;
-        }
-        // The terminal permission_request entry must appear after the judge
-        // result in append order. The terminal list is collected from the
-        // same stream, so compare first-seen indices.
-        const resultIndex = events.indexOf(result);
-        const terminalEvents = terminalList.filter(
-            (t) => events.indexOf(t) > resultIndex,
-        );
-        if (terminalEvents.length === 0) {
-            quarantine("human_before_result");
-            continue;
-        }
-        if (terminalEvents.length > 1) {
-            // Upstream's forwarded decision path double-writes the terminal
-            // event with the same requestId and resolution in adjacent file
-            // order (round 1: two `approved` or two `denied_with_reason`
-            // rows in the same second). Identical-resolution duplicates are
-            // that pattern, not an integrity fault: collapse to the first
-            // row. Conflicting resolutions stay quarantined — the analyzer
-            // must never pick a convenient outcome among alternatives
-            // (PIEXTENSIO-9).
-            const distinct = new Set(
-                terminalEvents.map((t) => asString(t.resolution) ?? ""),
-            );
-            if (distinct.size > 1) {
-                quarantine("multiple_human_decisions");
-                continue;
-            }
-        }
-        const terminalEvent = terminalEvents[0] as ReviewEvent;
-        const human = humanFromResolution(
-            asString(terminalEvent.resolution) ?? "",
-            terminalEvent.denialReason,
-        );
-        if ("error" in human) {
-            quarantine("terminal_event_unreadable");
-            continue;
-        }
-
-        const state = human.state;
-        let attribution: JoinedRow["humanAttribution"];
-        if (
-            state === "approved_for_session" ||
-            state === "approved_for_serving_session"
-        ) {
-            attribution = "session_state";
-        } else if (linkMarkers.has(requestId)) {
-            attribution = "unproven";
-        } else {
-            attribution = "no_link_marker";
-        }
-        // `unproven` rows (a plain `approved` sharing the request with a link
-        // allow) cannot be attributed to the human under the reconstructed
-        // rule; they stay joined but never enter the comparison matrix.
-
-        const row: JoinedRow = {
-            requestId,
-            judgeRuntimeId: asString(result.judgeRuntimeId),
-            resultKind:
-                result.resultKind === "judgment" ||
-                    result.resultKind === "preflight_defer" ||
-                    result.resultKind === "infrastructure_failure"
-                    ? result.resultKind
-                    : "infrastructure_failure",
-            verdict:
-                result.verdict === "allow" ||
-                result.verdict === "deny" ||
-                result.verdict === "defer"
-                    ? result.verdict
-                    : null,
-            code: asString(result.code),
-            modelCalled: asBoolean(result.modelCalled) ?? false,
-            provider: asString(result.provider),
-            model: asString(result.model),
-            origin: asString(result.origin),
-            judgeLatencyMs: asOptionalNumber(result.judgeLatencyMs),
-            modelLatencyMs: asOptionalNumber(result.modelLatencyMs),
-            inputUsage: asOptionalNumber(result.inputUsage),
-            outputUsage: asOptionalNumber(result.outputUsage),
-            reasonLength: asOptionalNumber(result.reasonLength),
-            human,
-            humanAttribution: attribution,
-        };
-        joined.push(row);
-        dispositions.push({ kind: "joined", row });
     }
 
     // Results without enrollment are integrity faults: the denominator must
     // be permission-owned.
-    for (const requestId of results.keys()) {
-        if (!enrolled.has(requestId) && !terminalIds.includes(requestId)) {
+    const terminalIds = [...collected.terminal.keys()];
+    for (const requestId of collected.results.keys()) {
+        if (!collected.enrolled.has(requestId) && !terminalIds.includes(requestId)) {
             quarantine("result_without_enrollment");
         }
     }
 
     return {
-        enrollments: enrolled.size,
+        enrollments: collected.enrolled.size,
         dispositions,
-        metrics: computeMetrics(enrolled.size, joined, quarantined),
+        metrics: computeMetrics(collected.enrolled.size, joined, quarantined),
     };
 }
 

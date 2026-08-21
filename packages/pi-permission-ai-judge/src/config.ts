@@ -92,6 +92,132 @@ function parseJudgeModel(value: unknown): JudgeModelSelection | undefined {
     };
 }
 
+/** Parse the `version` field; unknown versions are a hard failure. */
+function parseConfigVersion(
+    record: Record<string, unknown>,
+): { version: 1 | 2 } | { problem: string } {
+    // Version: unversioned files are legacy v1; anything but 1 or 2 fails
+    // closed to all defaults (the consent expression is uninterpretable).
+    if (record.version === undefined) {
+        return { version: 1 };
+    }
+    if (record.version === 1 || record.version === 2) {
+        return { version: record.version };
+    }
+    return {
+        problem: `unknown version ${JSON.stringify(record.version)}`,
+    };
+}
+
+/** Parse the `mode` field: unknown or missing resolves to shadow (fail-closed). */
+function parseMode(
+    record: Record<string, unknown>,
+): { mode: JudgeMode; diagnostics: ConfigDiagnostic[] } {
+    const diagnostics: ConfigDiagnostic[] = [];
+    let mode: JudgeMode = "shadow";
+    if (record.mode !== undefined) {
+        if (record.mode === "shadow" || record.mode === "enforce") {
+            mode = record.mode;
+        } else {
+            diagnostics.push({
+                key: "mode",
+                problem: `unknown mode ${JSON.stringify(record.mode)}`,
+                fallback: "shadow",
+            });
+        }
+    }
+    return { mode, diagnostics };
+}
+
+/**
+ * Parse the v2-only `model` field. `demoteToShadow` marks that a malformed
+ * model poisons the consent file — the caller fails the whole config closed
+ * to shadow rather than silently substituting the session model.
+ */
+function parseJudgeModelField(
+    record: Record<string, unknown>,
+    configVersion: 1 | 2,
+): {
+    judgeModel: JudgeModelSelection | undefined;
+    demoteToShadow: boolean;
+    diagnostics: ConfigDiagnostic[];
+} {
+    if (record.model === undefined) {
+        return { judgeModel: undefined, demoteToShadow: false, diagnostics: [] };
+    }
+    if (configVersion === 2) {
+        const judgeModel = parseJudgeModel(record.model);
+        if (judgeModel === undefined) {
+            return {
+                judgeModel: undefined,
+                demoteToShadow: true,
+                diagnostics: [
+                    {
+                        key: "model",
+                        problem: `invalid model ${JSON.stringify(record.model)} (expected {provider, id} with non-empty strings)`,
+                        fallback: "shadow (no judge model)",
+                    },
+                ],
+            };
+        }
+        return { judgeModel, demoteToShadow: false, diagnostics: [] };
+    }
+    return {
+        judgeModel: undefined,
+        demoteToShadow: false,
+        diagnostics: [
+            {
+                key: "model",
+                problem: "model selection requires \"version\": 2",
+                fallback: "session model",
+            },
+        ],
+    };
+}
+
+/**
+ * Parse `timeoutMs`: integers in [5_000, 30_000]; anything else falls back
+ * to the documented 15,000 ms default. Boundary semantics: 4,999 and 30,001
+ * are invalid, 5,000 and 30,000 are valid (PIEXTENSIO-3 boundaries).
+ */
+function parseTimeout(record: Record<string, unknown>): {
+    timeoutMs: number;
+    timeoutCohort: EffectiveJudgeConfig["timeoutCohort"];
+    diagnostics: ConfigDiagnostic[];
+} {
+    if (record.timeoutMs === undefined) {
+        return {
+            timeoutMs: DEFAULT_TIMEOUT_MS,
+            timeoutCohort: "default",
+            diagnostics: [],
+        };
+    }
+    const value = record.timeoutMs;
+    if (
+        typeof value === "number" &&
+        Number.isInteger(value) &&
+        value >= MIN_TIMEOUT_MS &&
+        value <= MAX_TIMEOUT_MS
+    ) {
+        return {
+            timeoutMs: value,
+            timeoutCohort: value === DEFAULT_TIMEOUT_MS ? "default" : value,
+            diagnostics: [],
+        };
+    }
+    return {
+        timeoutMs: DEFAULT_TIMEOUT_MS,
+        timeoutCohort: "default",
+        diagnostics: [
+            {
+                key: "timeoutMs",
+                problem: `invalid timeoutMs ${JSON.stringify(value)}`,
+                fallback: `${DEFAULT_TIMEOUT_MS} (default)`,
+            },
+        ],
+    };
+}
+
 /**
  * Load and validate the global config. Missing file, malformed JSON, or
  * an unknown version resolve to the documented defaults with one
@@ -128,40 +254,22 @@ export function loadJudgeConfig(
     const record = parsed as Record<string, unknown>;
     const diagnostics: ConfigDiagnostic[] = [];
 
-    // Version: unversioned files are legacy v1; anything but 1 or 2 fails
-    // closed to all defaults (the consent expression is uninterpretable).
-    let configVersion: 1 | 2 = 1;
-    if (record.version !== undefined) {
-        if (record.version === 1 || record.version === 2) {
-            configVersion = record.version;
-        } else {
-            return {
-                ...DEFAULT_CONFIG,
-                diagnostics: [
-                    {
-                        key: "version",
-                        problem: `unknown version ${JSON.stringify(record.version)}`,
-                        fallback: "all defaults",
-                    },
-                ],
-            };
-        }
+    const versionResult = parseConfigVersion(record);
+    if ("problem" in versionResult) {
+        return {
+            ...DEFAULT_CONFIG,
+            diagnostics: [
+                { key: "version", problem: versionResult.problem, fallback: "all defaults" },
+            ],
+        };
     }
+    const configVersion = versionResult.version;
 
-    // Mode: unknown or missing resolves to shadow (fail-closed). A v1
-    // enforce cannot silently inherit the v2 risk contract (ADR 0008).
-    let mode: JudgeMode = "shadow";
-    if (record.mode !== undefined) {
-        if (record.mode === "shadow" || record.mode === "enforce") {
-            mode = record.mode;
-        } else {
-            diagnostics.push({
-                key: "mode",
-                problem: `unknown mode ${JSON.stringify(record.mode)}`,
-                fallback: "shadow",
-            });
-        }
-    }
+    const modeResult = parseMode(record);
+    diagnostics.push(...modeResult.diagnostics);
+    let mode = modeResult.mode;
+
+    // A v1 enforce cannot silently inherit the v2 risk contract (ADR 0008).
     if (configVersion === 1 && mode === "enforce") {
         mode = "shadow";
         diagnostics.push({
@@ -172,60 +280,21 @@ export function loadJudgeConfig(
         });
     }
 
-    // Judge model: v2-only. A malformed model poisons the consent file —
-    // fail the whole config closed to shadow rather than silently
-    // substituting the session model.
-    let judgeModel: JudgeModelSelection | undefined;
-    if (record.model !== undefined) {
-        if (configVersion === 2) {
-            judgeModel = parseJudgeModel(record.model);
-            if (judgeModel === undefined) {
-                mode = "shadow";
-                diagnostics.push({
-                    key: "model",
-                    problem: `invalid model ${JSON.stringify(record.model)} (expected {provider, id} with non-empty strings)`,
-                    fallback: "shadow (no judge model)",
-                });
-            }
-        } else {
-            diagnostics.push({
-                key: "model",
-                problem: "model selection requires \"version\": 2",
-                fallback: "session model",
-            });
-        }
+    const modelResult = parseJudgeModelField(record, configVersion);
+    diagnostics.push(...modelResult.diagnostics);
+    if (modelResult.demoteToShadow) {
+        mode = "shadow";
     }
 
-    // Timeout: integers in [5_000, 30_000]; anything else falls back to the
-    // documented 15,000 ms default. Boundary semantics: 4,999 and 30,001
-    // are invalid, 5,000 and 30,000 are valid (PIEXTENSIO-3 boundaries).
-    let timeoutMs = DEFAULT_TIMEOUT_MS;
-    let timeoutCohort: EffectiveJudgeConfig["timeoutCohort"] = "default";
-    if (record.timeoutMs !== undefined) {
-        const value = record.timeoutMs;
-        if (
-            typeof value === "number" &&
-            Number.isInteger(value) &&
-            value >= MIN_TIMEOUT_MS &&
-            value <= MAX_TIMEOUT_MS
-        ) {
-            timeoutMs = value;
-            timeoutCohort = value === DEFAULT_TIMEOUT_MS ? "default" : value;
-        } else {
-            diagnostics.push({
-                key: "timeoutMs",
-                problem: `invalid timeoutMs ${JSON.stringify(value)}`,
-                fallback: `${DEFAULT_TIMEOUT_MS} (default)`,
-            });
-        }
-    }
+    const timeoutResult = parseTimeout(record);
+    diagnostics.push(...timeoutResult.diagnostics);
 
     return Object.freeze({
         configVersion,
         mode,
-        timeoutMs,
-        timeoutCohort,
-        judgeModel,
+        timeoutMs: timeoutResult.timeoutMs,
+        timeoutCohort: timeoutResult.timeoutCohort,
+        judgeModel: modelResult.judgeModel,
         diagnostics,
     });
 }
