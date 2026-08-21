@@ -32,6 +32,25 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
         getAgentDir: () => mockAgentDir.dir || "/nonexistent-ai-judge-test",
     };
 });
+// Catalog seam (PIEXTENSIO-24): index.ts reads the advisory catalog once
+// per session; tests inject entries through this hoisted holder while
+// keeping the real classifyModel (pure lookup).
+const { mockCatalog } = vi.hoisted(() => ({
+    mockCatalog: {
+        entries: [] as Array<Record<string, unknown>>,
+        diagnostics: [] as Array<Record<string, unknown>>,
+    },
+}));
+vi.mock("../src/catalog", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../src/catalog")>();
+    return {
+        ...actual,
+        loadModelCatalog: () => ({
+            catalog: { version: 1, entries: mockCatalog.entries },
+            diagnostics: mockCatalog.diagnostics,
+        }),
+    };
+});
 import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
 import type {
     ExtensionAPI,
@@ -50,6 +69,7 @@ import {
     unpublishPermissionsService,
 } from "@gotgenes/pi-permission-system";
 import extension from "../src/index";
+import type { ModelCatalogEntry } from "../src/catalog";
 import { PROMPT_VERSION, TOOL_SCHEMA_VERSION } from "../src/prompt";
 
 function createFakePi(): {
@@ -191,6 +211,8 @@ afterEach(() => {
         publishedService = undefined;
     }
     cleanupMockAgentDir();
+    mockCatalog.entries = [];
+    mockCatalog.diagnostics = [];
 });
 
 describe("AI judge lifecycle", () => {
@@ -874,5 +896,73 @@ describe("AI judge Enforce authority seam (PIEXTENSIO-23, ADR 0008)", () => {
         expect(
             notify.mock.calls.filter((call) => /Enforce/i.test(String(call[0]))),
         ).toHaveLength(0);
+    });
+
+    it("appends an untested-model note to the enforce notice for an out-of-catalog model", async () => {
+        const { notify } = await runAsk({
+            config: { version: 2, mode: "enforce" },
+        });
+        const enforceNotice = notify.mock.calls
+            .map((call) => String(call[0]))
+            .find((message) => /Enforce/i.test(message));
+        expect(enforceNotice).toBeDefined();
+        expect(enforceNotice).toMatch(/untested/i);
+        expect(enforceNotice).toMatch(/advisory catalog/i);
+    });
+
+    it("adds catalog-status notes for deprecated and revoked enforce models", async () => {
+        for (const status of ["deprecated", "revoked"] as const) {
+            mockCatalog.entries = [
+                {
+                    provider: "session-provider",
+                    model: "session-model",
+                    api: "openai-codex-responses",
+                    status,
+                    promptVersion: "v",
+                    corpusVersion: "v",
+                    testedAt: "2026-01-01T00:00:00Z",
+                    corpusCases: 21,
+                    matched: 21,
+                    infrastructureFailures: 0,
+                    latencyMs: { p50: 1, p95: 2, max: 3 },
+                    reportPath: "reports/x.json",
+                } satisfies ModelCatalogEntry,
+            ];
+            const { notify } = await runAsk({
+                config: { version: 2, mode: "enforce" },
+            });
+            const enforceNotice = notify.mock.calls
+                .map((call) => String(call[0]))
+                .find((message) => /Enforce/i.test(message));
+            expect(enforceNotice).toMatch(new RegExp(`catalog status: ${status}`, "i"));
+        }
+    });
+
+    it("omits the untested note when the enforce model is catalog-recommended", async () => {
+        mockCatalog.entries = [
+            {
+                provider: "session-provider",
+                model: "session-model",
+                api: "openai-codex-responses",
+                status: "recommended",
+                promptVersion: "v",
+                corpusVersion: "v",
+                testedAt: "2026-01-01T00:00:00Z",
+                corpusCases: 21,
+                matched: 21,
+                infrastructureFailures: 0,
+                latencyMs: { p50: 1, p95: 2, max: 3 },
+                reportPath: "reports/x.json",
+            } satisfies ModelCatalogEntry,
+        ];
+        const { notify } = await runAsk({
+            config: { version: 2, mode: "enforce" },
+        });
+        const enforceNotice = notify.mock.calls
+            .map((call) => String(call[0]))
+            .find((message) => /Enforce/i.test(message));
+        expect(enforceNotice).toBeDefined();
+        expect(enforceNotice).not.toMatch(/untested/i);
+        expect(enforceNotice).not.toMatch(/catalog status/i);
     });
 });

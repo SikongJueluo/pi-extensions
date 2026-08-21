@@ -26,6 +26,12 @@ import {
 } from "./conversation";
 import { classifyHighRisk, type HighRiskMatch } from "./highrisk";
 import { evaluateEnforceAuthority, type EnforceGateState } from "./judge";
+import {
+    classifyModel,
+    loadModelCatalog,
+    DEFAULT_CATALOG_PATH,
+    type ModelCatalogClassification,
+} from "./catalog";
 
 const LINK_NAME = "ai-bash-judge";
 const REVIEW_SCHEMA_VERSION = 1;
@@ -495,20 +501,51 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
         }
         // One non-blocking session notice in Enforce mode: the risk
         // contract and the effective judge model (ADR 0008). Not repeated
-        // per ask.
+        // per ask. The advisory model catalog (PIEXTENSIO-24) only
+        // annotates this notice — it never gates authority.
+        const catalogResult = loadModelCatalog({
+            catalogPath: DEFAULT_CATALOG_PATH,
+        });
+        for (const diagnostic of catalogResult.diagnostics) {
+            ctx.ui.notify(
+                `ai-bash-judge advisory catalog: ${diagnostic.key} — ${diagnostic.problem}; treating as empty`,
+                "warning",
+            );
+        }
         if (root.config.mode === "enforce") {
             const configured = root.config.judgeModel;
-            const judgeModelDescription =
-                configured !== undefined
-                    ? `${configured.provider}/${configured.id} (configured)`
-                    : (() => {
-                          const sessionModel = ctx.model;
-                          return sessionModel === undefined
-                              ? "the current session model (none resolved yet)"
-                              : `${sessionModel.provider}/${sessionModel.id} (current session model)`;
-                      })();
+            let judgeModelDescription: string;
+            let classification: ModelCatalogClassification | null;
+            if (configured !== undefined) {
+                judgeModelDescription = `${configured.provider}/${configured.id} (configured)`;
+                classification = classifyModel(
+                    catalogResult.catalog,
+                    configured.provider,
+                    configured.id,
+                );
+            } else {
+                const sessionModel = ctx.model;
+                if (sessionModel === undefined) {
+                    judgeModelDescription =
+                        "the current session model (none resolved yet)";
+                    classification = null;
+                } else {
+                    judgeModelDescription = `${sessionModel.provider}/${sessionModel.id} (current session model)`;
+                    classification = classifyModel(
+                        catalogResult.catalog,
+                        sessionModel.provider,
+                        sessionModel.id,
+                    );
+                }
+            }
+            const catalogNote =
+                classification === "unlisted"
+                    ? " This model is untested in the advisory catalog — used at your own risk."
+                    : classification === "deprecated" || classification === "revoked"
+                      ? ` Advisory catalog status: ${classification}.`
+                      : "";
             ctx.ui.notify(
-                `ai-bash-judge Enforce active: ${judgeModelDescription} judges Bash asks; allow skips the dialog — you accept the risk of model misjudgment (ADR 0008). High-risk shapes (irreversible, publish, system, credentials) always ask.`,
+                `ai-bash-judge Enforce active: ${judgeModelDescription} judges Bash asks; allow skips the dialog — you accept the risk of model misjudgment (ADR 0008). High-risk shapes (irreversible, publish, system, credentials) always ask.${catalogNote}`,
                 "info",
             );
         }

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.6-sol",
+      "api": "openai-codex-responses",
+      "status": "recommended",
+      "promptVersion": "bash-shadow-v4",
+      "corpusVersion": "2026-08-21.2",
+      "testedAt": "2026-08-21T15:00:47.219Z",
+      "corpusCases": 21,
+      "matched": 21,
+      "infrastructureFailures": 0,
+      "latencyMs": { "p50": 5823, "p95": 10396, "max": 10396 },
+      "reportPath": "reports/corpus-replay-gpt-5.6-sol-20260821-03.json",
+      "notes": "30000ms timeout cohort. Advisory compatibility data, not a safety certification (ADR 0008). Corpus 2026-08-21.2 revised unclear-forward defer→deny after two conservative deny runs (owner-endorsed); pre-revision runs -01 (20/21) and -02 (19/21) retained in reports/."
+    }
+  ]
+}
