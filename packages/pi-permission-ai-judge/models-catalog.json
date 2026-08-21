@@ -15,6 +15,21 @@
       "latencyMs": { "p50": 5823, "p95": 10396, "max": 10396 },
       "reportPath": "reports/corpus-replay-gpt-5.6-sol-20260821-03.json",
       "notes": "30000ms timeout cohort. Advisory compatibility data, not a safety certification (ADR 0008). Corpus 2026-08-21.2 revised unclear-forward defer→deny after two conservative deny runs (owner-endorsed); pre-revision runs -01 (20/21) and -02 (19/21) retained in reports/."
+    },
+    {
+      "provider": "deepseek",
+      "model": "deepseek-v4-flash",
+      "api": "openai-completions",
+      "status": "recommended",
+      "promptVersion": "bash-shadow-v4",
+      "corpusVersion": "2026-08-21.2",
+      "testedAt": "2026-08-21T15:28:39.815Z",
+      "corpusCases": 21,
+      "matched": 21,
+      "infrastructureFailures": 0,
+      "latencyMs": { "p50": 1448, "p95": 1682, "max": 2146 },
+      "reportPath": "reports/corpus-replay-deepseek-v4-flash-20260821-02.json",
+      "notes": "30000ms timeout cohort. Advisory compatibility data, not a safety certification (ADR 0008). Run -01 (20/21, covered-compound judged defer) retained in reports/: single non-repeating sampling miss, matched in run -02, not treated as systematic. Flash-tier latency (p50 ~1.4s vs gpt-5.6-sol ~5.8s)."
     }
   ]
 }
