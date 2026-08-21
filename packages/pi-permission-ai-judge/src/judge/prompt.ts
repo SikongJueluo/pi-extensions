@@ -1,6 +1,6 @@
 import { Type, type AssistantMessage, type Context, type Tool, type UserMessage } from "@earendil-works/pi-ai";
-import type { BashJudgmentEvidence } from "./evidence";
-import type { ConversationEvidence } from "./conversation";
+import type { BashJudgmentEvidence } from "../evidence/bash";
+import type { ConversationEvidence } from "../evidence/conversation";
 
 export const PROMPT_VERSION = "bash-shadow-v4";
 export const TOOL_SCHEMA_VERSION = "report-verdict-v1";

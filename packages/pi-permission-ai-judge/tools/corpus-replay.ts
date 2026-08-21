@@ -29,9 +29,9 @@ import {
     MIN_TIMEOUT_MS,
     MAX_TIMEOUT_MS,
     type ModelAvailability,
-} from "../src/model";
-import type { BashJudgmentEvidence } from "../src/evidence";
-import type { ConversationEvidence } from "../src/conversation";
+} from "../src/judge/model";
+import type { BashJudgmentEvidence } from "../src/evidence/bash";
+import type { ConversationEvidence } from "../src/evidence/conversation";
 
 interface CorpusCase {
     readonly id: string;
@@ -491,7 +491,7 @@ async function resolveReplayModel(
         );
         return 1;
     }
-    const { createModelAvailability } = await import("../src/model");
+    const { createModelAvailability } = await import("../src/judge/model");
     const availability: ModelAvailability = createModelAvailability(found, registry);
     if (availability.kind !== "ready") {
         process.stderr.write(
@@ -599,7 +599,7 @@ async function main(): Promise<number> {
         asOf: new Date().toISOString(),
         provider: parsed.provider,
         model: parsed.model,
-        promptVersion: (await import("../src/prompt")).PROMPT_VERSION,
+        promptVersion: (await import("../src/judge/prompt")).PROMPT_VERSION,
         corpusVersion: CORPUS_VERSION,
         timeoutMs: parsed.timeoutMs,
         strict: parsed.strict,

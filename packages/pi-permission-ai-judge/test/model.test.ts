@@ -5,7 +5,7 @@ import {
     createModelAvailability,
     requestStructuredVerdict,
     type ModelAvailability,
-} from "../src/model";
+} from "../src/judge/model";
 
 const metadata = {
     provider: "test-provider",

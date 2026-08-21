@@ -4,7 +4,7 @@ import {
     MAX_REASON_CODE_POINTS,
     PROMPT_VERSION,
     REPORT_VERDICT_TOOL_NAME,
-} from "../src/prompt";
+} from "../src/judge/prompt";
 import type { Context } from "@earendil-works/pi-ai";
 
 describe("buildJudgeContext", () => {

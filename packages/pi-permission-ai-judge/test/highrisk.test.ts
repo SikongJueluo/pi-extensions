@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyHighRisk } from "../src/highrisk";
+import { classifyHighRisk } from "../src/authority/highrisk";
 
 describe("classifyHighRisk — data_loss", () => {
     it.each([

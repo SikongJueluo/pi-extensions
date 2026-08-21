@@ -267,5 +267,5 @@ export function classifyModel(
 
 /** Package-root catalog path (data, not source; beside reports/). */
 export const DEFAULT_CATALOG_PATH: string = fileURLToPath(
-    new URL("../models-catalog.json", import.meta.url),
+    new URL("../../models-catalog.json", import.meta.url),
 );

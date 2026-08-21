@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
     buildConversationEvidence,
     type ConversationProbe,
-} from "../src/conversation";
+} from "../src/evidence/conversation";
 
 function entry(text: string): unknown {
     return {

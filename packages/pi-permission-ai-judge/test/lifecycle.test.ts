@@ -41,8 +41,8 @@ const { mockCatalog } = vi.hoisted(() => ({
         diagnostics: [] as Array<Record<string, unknown>>,
     },
 }));
-vi.mock("../src/catalog", async (importOriginal) => {
-    const actual = await importOriginal<typeof import("../src/catalog")>();
+vi.mock("../src/config/catalog", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../src/config/catalog")>();
     return {
         ...actual,
         loadModelCatalog: () => ({
@@ -69,8 +69,8 @@ import {
     unpublishPermissionsService,
 } from "@gotgenes/pi-permission-system";
 import extension from "../src/index";
-import type { ModelCatalogEntry } from "../src/catalog";
-import { PROMPT_VERSION, TOOL_SCHEMA_VERSION } from "../src/prompt";
+import type { ModelCatalogEntry } from "../src/config/catalog";
+import { PROMPT_VERSION, TOOL_SCHEMA_VERSION } from "../src/judge/prompt";
 
 function createFakePi(): {
     pi: ExtensionAPI;

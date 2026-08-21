@@ -5,8 +5,8 @@ import {
     DEFAULT_TIMEOUT_MS,
     MIN_TIMEOUT_MS,
     MAX_TIMEOUT_MS,
-} from "../src/model";
-import { createModelAvailability } from "../src/model";
+} from "../src/judge/model";
+import { createModelAvailability } from "../src/judge/model";
 import {
     applyTimeoutOption,
     replayCorpus,

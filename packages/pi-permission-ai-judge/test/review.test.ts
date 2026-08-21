@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createReviewSink, type ReviewSinkDeps } from "../src/review";
+import { createReviewSink, type ReviewSinkDeps } from "../src/telemetry/review";
 import type { AuthorizerLog } from "@gotgenes/pi-permission-system";
 
 function fakeLog(): AuthorizerLog & {

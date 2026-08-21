@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
     evaluateEnforceAuthority,
     type EnforceGateState,
-} from "../src/judge";
+} from "../src/authority/enforce";
 
 const ALL_OPEN: EnforceGateState = {
     auditHealthy: true,

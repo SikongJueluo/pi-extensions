@@ -3,7 +3,7 @@ import {
     classifyModel,
     loadModelCatalog,
     type CatalogDeps,
-} from "../src/catalog";
+} from "../src/config/catalog";
 
 /**
  * PIEXTENSIO-24: the advisory model catalog shipped with the package.

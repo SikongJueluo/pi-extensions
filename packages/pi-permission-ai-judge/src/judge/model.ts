@@ -5,8 +5,8 @@ import type {
 } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { buildJudgeContext, MAX_REASON_CODE_POINTS, REPORT_VERDICT_TOOL_NAME } from "./prompt";
-import type { BashJudgmentEvidence } from "./evidence";
-import type { ConversationEvidence } from "./conversation";
+import type { BashJudgmentEvidence } from "../evidence/bash";
+import type { ConversationEvidence } from "../evidence/conversation";
 
 // 15s is the PIEXTENSIO-11 calibrated default (canonical resolution c0b0028d):
 // 15,000 ms total wall-clock deadline, accepted config range 5,000–30,000 ms,

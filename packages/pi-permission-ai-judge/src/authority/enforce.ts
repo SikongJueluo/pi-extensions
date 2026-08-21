@@ -1,4 +1,4 @@
-import type { TelemetryHealth } from "./review";
+import type { TelemetryHealth } from "../telemetry/review";
 
 /**
  * Enforce truth table (PIEXTENSIO-3 cat.4 / M5; ADR 0008 / PIEXTENSIO-23).

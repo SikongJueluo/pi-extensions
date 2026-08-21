@@ -21,12 +21,12 @@ owning decision.
 | Module | File | Deterministic tests | Status |
 |---|---|---|---|
 | index | `src/index.ts` | `test/lifecycle.test.ts` | present |
-| config | `src/config.ts` | `test/config.test.ts` | present |
-| evidence | `src/evidence.ts`, `src/conversation.ts` | `test/evidence.test.ts`, `test/conversation.test.ts` | present |
-| prompt | `src/prompt.ts` | `test/prompt.test.ts` | present |
-| model | `src/model.ts` | `test/model.test.ts` | present |
-| review | `src/review.ts` | `test/review.test.ts` | present |
-| judge | `src/judge.ts` | `test/judge.test.ts` | present |
+| config | `src/config/judge.ts` | `test/config.test.ts` | present |
+| evidence | `src/evidence/bash.ts`, `src/evidence/conversation.ts` | `test/evidence.test.ts`, `test/conversation.test.ts` | present |
+| prompt | `src/judge/prompt.ts` | `test/prompt.test.ts` | present |
+| model | `src/judge/model.ts` | `test/model.test.ts` | present |
+| review | `src/telemetry/review.ts` | `test/review.test.ts` | present |
+| judge | `src/authority/enforce.ts` | `test/judge.test.ts` | present |
 | analyzer (separate governance consumer) | `src/analyzer/` | `test/analyzer/analyze.test.ts` | present |
 
 No eighth live module was invented.

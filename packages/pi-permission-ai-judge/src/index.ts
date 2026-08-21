@@ -11,31 +11,31 @@ import {
     type AuthorizerLog,
     type AuthorizerVerdict,
 } from "@gotgenes/pi-permission-system";
-import { buildBashJudgmentEvidence, type BashJudgmentEvidence } from "./evidence";
+import { buildBashJudgmentEvidence, type BashJudgmentEvidence } from "./evidence/bash";
 import {
     createModelAvailability,
     requestStructuredVerdict,
     type ModelAvailability,
     type ModelAttempt,
-} from "./model";
-import { PROMPT_VERSION, TOOL_SCHEMA_VERSION } from "./prompt";
-import { loadJudgeConfig, type EffectiveJudgeConfig } from "./config";
-import { createReviewSink, type ReviewSink } from "./review";
-import { createAuditLog, type AuditLog } from "./audit";
+} from "./judge/model";
+import { PROMPT_VERSION, TOOL_SCHEMA_VERSION } from "./judge/prompt";
+import { loadJudgeConfig, type EffectiveJudgeConfig } from "./config/judge";
+import { createReviewSink, type ReviewSink } from "./telemetry/review";
+import { createAuditLog, type AuditLog } from "./telemetry/audit";
 import {
     buildConversationEvidence,
     conversationProbeFromSession,
     type ConversationEvidence,
-} from "./conversation";
-import { classifyHighRisk, type HighRiskMatch } from "./highrisk";
-import { evaluateEnforceAuthority, type EnforceGateState } from "./judge";
+} from "./evidence/conversation";
+import { classifyHighRisk, type HighRiskMatch } from "./authority/highrisk";
+import { evaluateEnforceAuthority, type EnforceGateState } from "./authority/enforce";
 import {
     classifyModel,
     loadModelCatalog,
     DEFAULT_CATALOG_PATH,
     type ModelCatalogClassification,
     type LoadedModelCatalog,
-} from "./catalog";
+} from "./config/catalog";
 
 const LINK_NAME = "ai-bash-judge";
 const REVIEW_SCHEMA_VERSION = 1;

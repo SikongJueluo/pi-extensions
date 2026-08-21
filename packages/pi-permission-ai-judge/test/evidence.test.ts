@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PromptPermissionDetails } from "@gotgenes/pi-permission-system";
-import { buildBashJudgmentEvidence } from "../src/evidence";
+import { buildBashJudgmentEvidence } from "../src/evidence/bash";
 
 function details(
     unit: string,

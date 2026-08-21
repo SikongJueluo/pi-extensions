@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadJudgeConfig, type ConfigLoadDeps } from "../src/config";
+import { loadJudgeConfig, type ConfigLoadDeps } from "../src/config/judge";
 
 function deps(files: Record<string, string> = {}): ConfigLoadDeps {
     return {
