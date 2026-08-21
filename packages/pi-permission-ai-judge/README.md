@@ -55,7 +55,7 @@ pi install github.com/SikongJueluo/pi-extensions
 
 ## 推荐模型目录
 
-`src/models-catalog.json` 列出实测过的判官模型（测试时间、prompt/语料版本、匹配数、延迟分布），逐例报告在 `reports/`。"推荐"只代表兼容性实测通过，不是安全认证；目录外的模型仍可用于 enforce（不拦截），仅会话开始时提示未经测试。
+`models-catalog.json`（包根）列出实测过的判官模型（测试时间、prompt/语料版本、匹配数、延迟分布），逐例报告在 `reports/`。"推荐"只代表兼容性实测通过，不是安全认证；目录外的模型仍可用于 enforce（不拦截），仅会话开始时提示未经测试。
 
 ## 日志与工具
 

@@ -12,8 +12,9 @@ import { fileURLToPath } from "node:url";
  * testing means structured-output/quality/latency compatibility, not a
  * safety certification.
  *
- * The catalog is hand-maintained data (`models-catalog.json` beside this
- * module); no runtime code writes it. Anything unreadable, malformed, or
+ * The catalog is hand-maintained data (`models-catalog.json` at the
+ * package root, beside `reports/`); no runtime code writes it. Anything
+ * unreadable, malformed, or
  * of an unknown schema version — or any single invalid entry — degrades
  * to an empty catalog with a diagnostic: partial recovery would serve
  * unreviewed statuses from a file the owner has not validated, and
@@ -264,7 +265,7 @@ export function classifyModel(
     return "unlisted";
 }
 
-/** Package-local default catalog path (beside this module). */
+/** Package-root catalog path (data, not source; beside reports/). */
 export const DEFAULT_CATALOG_PATH: string = fileURLToPath(
-    new URL("./models-catalog.json", import.meta.url),
+    new URL("../models-catalog.json", import.meta.url),
 );
