@@ -411,24 +411,73 @@ export function analyzeShadowReviewLog(events: readonly ReviewEvent[]): AnalyzeR
     };
 }
 
-function computeMetrics(
-    n: number,
-    joined: readonly JoinedRow[],
-    quarantined: Record<string, number>,
-): Metrics {
-    const matrix: Record<string, number> = {};
+/** Per-kind tallies collected in one pass over the joined rows. */
+interface RowTallies {
+    readonly joinedJudgments: number;
+    readonly falseAllows: number;
+    readonly conservativeDeny: number;
+    readonly conservativeDefer: number;
+    readonly humanAllowJudgments: number;
+    readonly preflightDefers: number;
+    readonly infrastructureFailures: number;
+    readonly infraByCode: Record<string, number>;
+    /** Comparison matrix [ai|human] over attributable judgment rows. */
+    readonly matrix: Record<string, number>;
+    readonly judgeLatencies: Array<number | null | undefined>;
+    readonly modelLatencies: Array<number | null | undefined>;
+}
+
+/** Counters accumulated over attributable judgment rows. */
+interface MatrixCounters {
+    matrix: Record<string, number>;
+    falseAllows: number;
+    conservativeDeny: number;
+    conservativeDefer: number;
+    humanAllowJudgments: number;
+}
+
+/**
+ * Tally one attributable judgment row into the comparison matrix and the
+ * conservative-direction counters. Unattributable rows never reach here.
+ */
+function tallyAttributable(row: JoinedRow, c: MatrixCounters): void {
+    const key = `${row.verdict ?? "null"}|${row.human.decision}`;
+    c.matrix[key] = (c.matrix[key] ?? 0) + 1;
+    if (row.human.decision === "allow") {
+        c.humanAllowJudgments += 1;
+    }
+    if (row.verdict === "allow" && row.human.decision === "deny") {
+        c.falseAllows += 1;
+    }
+    if (row.verdict === "deny" && row.human.decision === "allow") {
+        c.conservativeDeny += 1;
+    }
+    if (row.verdict === "defer" && row.human.decision === "allow") {
+        c.conservativeDefer += 1;
+    }
+}
+
+/**
+ * One pass over joined rows: latencies are collected for every row;
+ * non-judgment rows (preflight/infra) are tallied and excluded; judgment
+ * rows enter the comparison matrix unless their human attribution is
+ * `unproven` (those stay joined but never enter the matrix).
+ */
+function tallyJoinedRows(joined: readonly JoinedRow[]): RowTallies {
     const infraByCode: Record<string, number> = {};
-        const judgeLatencies: Array<number | null | undefined> = [];
+    const judgeLatencies: Array<number | null | undefined> = [];
     const modelLatencies: Array<number | null | undefined> = [];
 
     let joinedJudgments = 0;
-    let attributed = 0;
-    let falseAllows = 0;
-    let conservativeDeny = 0;
-    let conservativeDefer = 0;
-    let humanAllowJudgments = 0;
     let preflightDefers = 0;
     let infrastructureFailures = 0;
+    const counters: MatrixCounters = {
+        matrix: {},
+        falseAllows: 0,
+        conservativeDeny: 0,
+        conservativeDefer: 0,
+        humanAllowJudgments: 0,
+    };
 
     for (const row of joined) {
         judgeLatencies.push(row.judgeLatencyMs);
@@ -447,63 +496,65 @@ function computeMetrics(
                 break;
         }
         joinedJudgments += 1;
-        if (row.humanAttribution === "unproven") {
-            continue;
-        }
-        attributed += 1;
-        const key = `${row.verdict ?? "null"}|${row.human.decision}`;
-        matrix[key] = (matrix[key] ?? 0) + 1;
-        if (row.human.decision === "allow") {
-            humanAllowJudgments += 1;
-        }
-        if (row.verdict === "allow" && row.human.decision === "deny") {
-            falseAllows += 1;
-        }
-        if (row.verdict === "deny" && row.human.decision === "allow") {
-            conservativeDeny += 1;
-        }
-        if (row.verdict === "defer" && row.human.decision === "allow") {
-            conservativeDefer += 1;
+        if (row.humanAttribution !== "unproven") {
+            tallyAttributable(row, counters);
         }
     }
 
-    const completionCoverage = n > 0 ? (joined.length + missingResults(n, joined)) / n : 0;
+    return {
+        joinedJudgments,
+        falseAllows: counters.falseAllows,
+        conservativeDeny: counters.conservativeDeny,
+        conservativeDefer: counters.conservativeDefer,
+        humanAllowJudgments: counters.humanAllowJudgments,
+        preflightDefers,
+        infrastructureFailures,
+        infraByCode,
+        matrix: counters.matrix,
+        judgeLatencies,
+        modelLatencies,
+    };
+}
+
+function computeMetrics(
+    n: number,
+    joined: readonly JoinedRow[],
+    quarantined: Record<string, number>,
+): Metrics {
+    const t = tallyJoinedRows(joined);
     return {
         joined: joined.length,
         quarantined,
-        joinedJudgments,
+        joinedJudgments: t.joinedJudgments,
         completionCoverage: joined.length / (n || 1),
-        humanJoinCoverage: (joined.length - quarantinedCount(joined)) / (n || 1),
-        judgmentCoverage: joinedJudgments / (n || 1),
-        matrix,
-        falseAllows,
-        falseAllowRate: falseAllows > 0 || hasAllowPrediction(matrix)
-            ? falseAllows / allowPredictions(matrix)
+        humanJoinCoverage: (joined.length - unprovenCount(joined)) / (n || 1),
+        judgmentCoverage: t.joinedJudgments / (n || 1),
+        matrix: t.matrix,
+        falseAllows: t.falseAllows,
+        falseAllowRate: t.falseAllows > 0 || hasAllowPrediction(t.matrix)
+            ? t.falseAllows / allowPredictions(t.matrix)
             : null,
-        conservativeDeny,
-        conservativeDefer,
+        conservativeDeny: t.conservativeDeny,
+        conservativeDefer: t.conservativeDefer,
         conservativeRate:
-            humanAllowJudgments > 0
-                ? (conservativeDeny + conservativeDefer) / humanAllowJudgments
+            t.humanAllowJudgments > 0
+                ? (t.conservativeDeny + t.conservativeDefer) / t.humanAllowJudgments
                 : null,
-        preflightDefers,
-        infrastructureFailures,
-        infrastructureByCode: infraByCode,
-        judgeLatency: latencyStats(judgeLatencies),
-        modelLatency: latencyStats(modelLatencies),
+        preflightDefers: t.preflightDefers,
+        infrastructureFailures: t.infrastructureFailures,
+        infrastructureByCode: t.infraByCode,
+        judgeLatency: latencyStats(t.judgeLatencies),
+        modelLatency: latencyStats(t.modelLatencies),
     };
 }
 
 // ── helper functions below exist to keep computeMetrics readable; they are
 // not part of the public surface.
 
-function missingResults(n: number, joined: readonly JoinedRow[]): number {
-    return Math.max(0, n - joined.length);
-}
-function quarantinedCount(joined: readonly JoinedRow[]): number {
-    // Quarantined rows are tracked outside `joined`; in this simplified
-    // metric path the human-join coverage counts joined rows with an
-    // attributable human outcome.
+function unprovenCount(joined: readonly JoinedRow[]): number {
+    // The human-join coverage counts joined rows with an
+    // attributable human outcome; `unproven` rows are joined but
+    // never attributable.
     return joined.filter((r) => r.humanAttribution === "unproven").length;
 }
 

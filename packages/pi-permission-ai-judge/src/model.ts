@@ -159,6 +159,72 @@ function codePointLength(value: string): number {
     return [...value].length;
 }
 
+/** The completion type produced by a ready availability. */
+type VerdictResponse = Awaited<
+    ReturnType<Extract<ModelAvailability, { kind: "ready" }>["complete"]>
+>;
+
+/** Validation outcome for one completion response. */
+type ValidatedVerdict =
+    | {
+        readonly kind: "judgment";
+        readonly verdict: SemanticVerdict;
+        readonly reason: string;
+    }
+    | { readonly kind: "invalid"; readonly code: InfrastructureCode };
+
+/**
+ * Validate one completion response against the report_verdict contract:
+ * bounded output usage, exactly one report_verdict tool call, exactly the
+ * {verdict, reason} argument shape, and a non-empty reason within the
+ * code-point bound.
+ */
+function validateVerdictResponse(response: VerdictResponse): ValidatedVerdict {
+    const outputTokens = response.usage.output;
+    if (
+        !Number.isFinite(outputTokens) ||
+        outputTokens <= 0 ||
+        outputTokens > MAX_OUTPUT_TOKENS
+    ) {
+        return { kind: "invalid", code: "model_error" };
+    }
+
+    const calls = response.content.filter(
+        (part) => part.type === "toolCall",
+    );
+    if (
+        calls.length !== 1 ||
+        calls[0]?.name !== REPORT_VERDICT_TOOL_NAME
+    ) {
+        return { kind: "invalid", code: "missing_tool_call" };
+    }
+
+    const args = calls[0].arguments;
+    if (args === null || typeof args !== "object" || Array.isArray(args)) {
+        return { kind: "invalid", code: "invalid_arguments" };
+    }
+    const keys = Object.keys(args).sort();
+    if (keys.length !== 2 || keys[0] !== "reason" || keys[1] !== "verdict") {
+        return { kind: "invalid", code: "invalid_arguments" };
+    }
+    if (!isVerdict(args.verdict)) {
+        return { kind: "invalid", code: "invalid_verdict" };
+    }
+    if (typeof args.reason !== "string") {
+        return { kind: "invalid", code: "invalid_reason" };
+    }
+
+    const reason = args.reason.trim();
+    if (
+        reason.length === 0 ||
+        codePointLength(reason) > MAX_REASON_CODE_POINTS
+    ) {
+        return { kind: "invalid", code: "invalid_reason" };
+    }
+
+    return { kind: "judgment", verdict: args.verdict, reason };
+}
+
 /** Make one bounded completion and accept only one `report_verdict` tool call. */
 export async function requestStructuredVerdict(
     availability: ModelAvailability,
@@ -232,59 +298,26 @@ export async function requestStructuredVerdict(
             return failure("model_error");
         }
 
-        const outputTokens = response.usage.output;
+        // Usage is observed before validation so failure rows carry the
+        // telemetry of the response that failed the contract.
         const inputTokens = response.usage.input;
+        const outputTokens = response.usage.output;
         if (Number.isFinite(inputTokens)) {
             observedInputTokens = inputTokens;
         }
         if (Number.isFinite(outputTokens)) {
             observedOutputTokens = outputTokens;
         }
-        if (
-            !Number.isFinite(outputTokens) ||
-            outputTokens <= 0 ||
-            outputTokens > MAX_OUTPUT_TOKENS
-        ) {
-            return failure("model_error");
-        }
 
-        const calls = response.content.filter(
-            (part) => part.type === "toolCall",
-        );
-        if (
-            calls.length !== 1 ||
-            calls[0]?.name !== REPORT_VERDICT_TOOL_NAME
-        ) {
-            return failure("missing_tool_call");
-        }
-
-        const args = calls[0].arguments;
-        if (args === null || typeof args !== "object" || Array.isArray(args)) {
-            return failure("invalid_arguments");
-        }
-        const keys = Object.keys(args).sort();
-        if (keys.length !== 2 || keys[0] !== "reason" || keys[1] !== "verdict") {
-            return failure("invalid_arguments");
-        }
-        if (!isVerdict(args.verdict)) {
-            return failure("invalid_verdict");
-        }
-        if (typeof args.reason !== "string") {
-            return failure("invalid_reason");
-        }
-
-        const reason = args.reason.trim();
-        if (
-            reason.length === 0 ||
-            codePointLength(reason) > MAX_REASON_CODE_POINTS
-        ) {
-            return failure("invalid_reason");
+        const validated = validateVerdictResponse(response);
+        if (validated.kind === "invalid") {
+            return failure(validated.code);
         }
 
         return {
             kind: "judgment",
-            verdict: args.verdict,
-            reason,
+            verdict: validated.verdict,
+            reason: validated.reason,
             metadata: availability.metadata,
             inputTokens: observedInputTokens,
             outputTokens,

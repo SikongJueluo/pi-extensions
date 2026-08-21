@@ -92,22 +92,20 @@ function userTextFrom(message: unknown): string | null {
 }
 
 /**
- * Build bounded conversation evidence from the active branch.
- *
- * Iterates entries newest-first to guarantee latest-user preservation,
- * then reverses for newest-last output. Head/middle/tail truncation: with
- * more items than fit, the newest `MAX_CONVERSATION_ITEMS` are kept and
- * `truncated` is set — the head is the part dropped, which keeps the most
- * recent intent window intact and matches "latest-user preservation".
+ * Newest-first user texts from the active branch, bounded by
+ * MAX_CONVERSATION_ITEMS. Compaction boundaries are flagged, not kept.
  */
-export function buildConversationEvidence(
-    probe: ConversationProbe,
-): ConversationEvidence {
-    const entries = probe.getActiveEntries();
+function collectUserTexts(
+    entries: readonly unknown[],
+): { texts: string[]; hasCompaction: boolean } {
     const collected: string[] = [];
     let hasCompaction = false;
 
-    for (let i = entries.length - 1; i >= 0 && collected.length < MAX_CONVERSATION_ITEMS; i -= 1) {
+    for (
+        let i = entries.length - 1;
+        i >= 0 && collected.length < MAX_CONVERSATION_ITEMS;
+        i -= 1
+    ) {
         const entry = entries[i];
         if (!isRecord(entry)) {
             continue;
@@ -124,6 +122,39 @@ export function buildConversationEvidence(
             collected.push(text);
         }
     }
+    return { texts: collected, hasCompaction };
+}
+
+/**
+ * Character budget: the head (oldest) drop index so the remainder fits
+ * within MAX_CONVERSATION_CHARS; 0 when everything fits. Always keeps at
+ * least the newest item.
+ */
+function charBudgetStart(kept: readonly string[]): number {
+    let rendered = 0;
+    for (let i = 0; i < kept.length; i += 1) {
+        rendered += kept[i]?.length ?? 0;
+        if (rendered > MAX_CONVERSATION_CHARS) {
+            return Math.max(1, i);
+        }
+    }
+    return 0;
+}
+
+/**
+ * Build bounded conversation evidence from the active branch.
+ *
+ * Iterates entries newest-first to guarantee latest-user preservation,
+ * then reverses for newest-last output. Head/middle/tail truncation: with
+ * more items than fit, the newest `MAX_CONVERSATION_ITEMS` are kept and
+ * `truncated` is set — the head is the part dropped, which keeps the most
+ * recent intent window intact and matches "latest-user preservation".
+ */
+export function buildConversationEvidence(
+    probe: ConversationProbe,
+): ConversationEvidence {
+    const entries = probe.getActiveEntries();
+    const { texts: collected, hasCompaction } = collectUserTexts(entries);
 
     const kept = collected.reverse();
     const totalItems = countUserEntries(entries);
@@ -131,22 +162,14 @@ export function buildConversationEvidence(
 
     // Character budget: drop from the head (oldest) until it fits; the
     // newest items are preserved. A dropped head is recorded by `truncated`.
-    let rendered = 0;
-    let start = 0;
-    for (let i = 0; i < kept.length; i += 1) {
-        rendered += kept[i]?.length ?? 0;
-        if (rendered > MAX_CONVERSATION_CHARS) {
-            start = Math.max(1, i); // keep at least the newest item
-            rendered = 0;
-            for (let j = start; j < kept.length; j += 1) {
-                rendered += kept[j]?.length ?? 0;
-            }
-            break;
-        }
-    }
+    const start = charBudgetStart(kept);
     const finalItems = kept
         .slice(start)
         .map((text, index) => ({ position: index + 1, role: "user" as const, text }));
+    const rendered = finalItems.reduce(
+        (sum, item) => sum + item.text.length,
+        0,
+    );
 
     return {
         items: finalItems,

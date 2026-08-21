@@ -542,6 +542,82 @@ describe("AI judge lifecycle", () => {
         harness.shutdown();
     });
 
+    it("records a provider failure as an infrastructure_failure row and defers", async () => {
+        let authorize: Authorizer["authorize"] | undefined;
+        const service = {
+            registerAuthorizer: vi.fn((_name, callback) => {
+                authorize = callback;
+                return vi.fn();
+            }),
+            checkPermission: vi.fn(),
+            getToolPermission: vi.fn(),
+        } as unknown as PermissionsService;
+        publishPermissionsService(service);
+        publishedService = service;
+
+        const complete = vi.fn(
+            async () => {
+                throw new Error("provider 500");
+            },
+        );
+        const ctx = {
+            hasUI: true,
+            sessionManager: fakeSessionManager(),
+            model: {
+                id: "test-model",
+                provider: "test-provider",
+                api: "openai-codex-responses",
+            } as Model<any>,
+            modelRegistry: { complete },
+            ui: { notify: vi.fn() },
+        } as unknown as ExtensionContext;
+
+        const harness = createFakePi();
+        extension(harness.pi);
+        harness.start(ctx);
+        harness.ready();
+        expect(authorize).toBeDefined();
+
+        const reviews: Array<{
+            event: string;
+            details?: Record<string, unknown>;
+        }> = [];
+        const verdict = await authorize!(
+            ask(),
+            {
+                checkPermission: vi.fn(),
+                getToolPermission: vi.fn(),
+            },
+            {
+                review: (event, details) => reviews.push({ event, details }),
+                debug: vi.fn(),
+            },
+        );
+
+        expect(verdict).toEqual({ kind: "defer" });
+        expect(complete).toHaveBeenCalledTimes(1);
+        expect(reviews).toMatchObject([
+            {
+                event: "ai_bash_judge.result",
+                details: expect.objectContaining({
+                    resultKind: "infrastructure_failure",
+                    verdict: null,
+                    effectiveVerdict: "defer",
+                    modelCalled: true,
+                    code: "model_error",
+                    modelSource: "session",
+                    riskOverride: null,
+                    inputUsage: null,
+                    outputUsage: null,
+                }),
+            },
+        ]);
+        // The failure row must not leak the provider error text.
+        expect(JSON.stringify(reviews)).not.toContain("provider 500");
+
+        harness.shutdown();
+    });
+
     it("does not register from a headless child", () => {
         const service = {
             registerAuthorizer: vi.fn(),

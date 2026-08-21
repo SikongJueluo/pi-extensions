@@ -444,6 +444,140 @@ describe("authorizeInnerCommand — fail-closed deferrals", () => {
         expect(check).toEqual([]);
     });
 
+    // -- extractBashCommandEvidence guard branches: every malformed shape
+    // of the structured payload must defer silently (fail-closed) without
+    // reaching the deterministic query.
+
+    it("defers silently when payload.evidence is not an array", async () => {
+        const details = bashDetails("call_1", null, "timeout 30s pnpm test");
+        const { verdict, log, check } = await run({
+            recoveredCommand: "timeout 30s pnpm test",
+            states: { "pnpm test": "allow" },
+            details: {
+                payload: {
+                    ...details.payload,
+                    evidence: "not-an-array" as unknown as [],
+                },
+            },
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(log).toEqual([]);
+        expect(check).toEqual([]);
+    });
+
+    it("defers silently when payload.request is missing", async () => {
+        const details = bashDetails("call_1", null, "timeout 30s pnpm test");
+        const { verdict, check } = await run({
+            recoveredCommand: "timeout 30s pnpm test",
+            states: { "pnpm test": "allow" },
+            details: {
+                payload: {
+                    ...details.payload,
+                    request: undefined as unknown as (typeof details.payload)["request"],
+                },
+            },
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(check).toEqual([]);
+    });
+
+    it("defers silently when the requester was forwarded", async () => {
+        const details = bashDetails("call_1", null, "timeout 30s pnpm test");
+        const { verdict, check } = await run({
+            recoveredCommand: "timeout 30s pnpm test",
+            states: { "pnpm test": "allow" },
+            details: {
+                payload: {
+                    ...details.payload,
+                    request: {
+                        ...details.payload.request,
+                        requester: { agentName: null, forwarded: true, sessionId: "s-child" },
+                    },
+                },
+            },
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(check).toEqual([]);
+    });
+
+    it("defers silently when the ask came through an invoking tool", async () => {
+        const details = bashDetails("call_1", null, "timeout 30s pnpm test");
+        const { verdict, check } = await run({
+            recoveredCommand: "timeout 30s pnpm test",
+            states: { "pnpm test": "allow" },
+            details: {
+                payload: {
+                    ...details.payload,
+                    request: {
+                        ...details.payload.request,
+                        invokedToolName: "custom_tool",
+                    },
+                },
+            },
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(check).toEqual([]);
+    });
+
+    it("defers silently when the request surface is not Bash", async () => {
+        const details = bashDetails("call_1", null, "timeout 30s pnpm test");
+        const { verdict, check } = await run({
+            recoveredCommand: "timeout 30s pnpm test",
+            states: { "pnpm test": "allow" },
+            details: {
+                payload: {
+                    ...details.payload,
+                    request: { ...details.payload.request, surface: "edit" },
+                },
+            },
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(check).toEqual([]);
+    });
+
+    it("defers silently on a blank request value", async () => {
+        const details = bashDetails("call_1", null, "timeout 30s pnpm test");
+        const { verdict, check } = await run({
+            recoveredCommand: "timeout 30s pnpm test",
+            states: { "pnpm test": "allow" },
+            details: {
+                payload: {
+                    ...details.payload,
+                    request: { ...details.payload.request, value: "   " },
+                },
+            },
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(check).toEqual([]);
+    });
+
+    it("defers silently when the legacy command projection disagrees with the structured value", async () => {
+        const { verdict, check } = await run({
+            recoveredCommand: "timeout 30s pnpm test",
+            states: { "pnpm test": "allow" },
+            details: { command: "echo different" },
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(check).toEqual([]);
+    });
+
+    it("defers silently on a blank full-command evidence text", async () => {
+        const details = bashDetails(
+            "call_1",
+            null,
+            "timeout 30s pnpm test",
+            "   ",
+        );
+        const { verdict, check } = await run({
+            recoveredCommand: "   ",
+            unitCommand: "timeout 30s pnpm test",
+            states: { "pnpm test": "allow" },
+            details: { payload: details.payload },
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(check).toEqual([]);
+    });
+
     it("defers silently for a shell alias that re-exposes Bash", async () => {
         const details = bashDetails(
             "call_1",

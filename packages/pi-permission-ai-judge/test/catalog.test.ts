@@ -83,6 +83,61 @@ describe("loadModelCatalog", () => {
         expect(diagnostics[0]?.key).toBe("file");
         expect(String(diagnostics[0]?.problem)).toMatch(/whole catalog degraded/i);
     });
+
+    it("rejects an entry per invalid field (every parseEntry branch)", () => {
+        const cases: readonly [name: string, entry: unknown][] = [
+            ["non-object entry", "not-an-object"],
+            ["null entry", null],
+            ["array entry", [VALID_ENTRY]],
+            ["empty provider", { ...VALID_ENTRY, provider: "  " }],
+            ["empty model", { ...VALID_ENTRY, model: "" }],
+            ["empty api", { ...VALID_ENTRY, api: "" }],
+            ["unknown status", { ...VALID_ENTRY, status: "experimental" }],
+            ["empty promptVersion", { ...VALID_ENTRY, promptVersion: "" }],
+            ["empty corpusVersion", { ...VALID_ENTRY, corpusVersion: "" }],
+            ["empty testedAt", { ...VALID_ENTRY, testedAt: "" }],
+            ["non-integer corpusCases", { ...VALID_ENTRY, corpusCases: 2.5 }],
+            ["zero corpusCases", { ...VALID_ENTRY, corpusCases: 0 }],
+            ["non-integer matched", { ...VALID_ENTRY, matched: 1.5 }],
+            ["non-integer infrastructureFailures", { ...VALID_ENTRY, infrastructureFailures: 0.5 }],
+            ["latencyMs not an object", { ...VALID_ENTRY, latencyMs: 3000 }],
+            ["latencyMs wrong type", { ...VALID_ENTRY, latencyMs: { p50: "3000", p95: null, max: null } }],
+            ["latencyMs missing key", { ...VALID_ENTRY, latencyMs: { p50: 1, p95: null } }],
+            ["empty reportPath", { ...VALID_ENTRY, reportPath: "" }],
+            ["blank notes", { ...VALID_ENTRY, notes: "   " }],
+        ];
+        for (const [name, entry] of cases) {
+            const { catalog, diagnostics } = run(depsWith(JSON.stringify({
+                version: 1,
+                entries: [entry],
+            })));
+            expect(catalog?.entries, name).toEqual([]);
+            expect(diagnostics.map((d) => d.key), name).toContain("file");
+        }
+    });
+
+    it("accepts latency nulls and omits notes only when absent", () => {
+        const withNulls = {
+            ...VALID_ENTRY,
+            latencyMs: { p50: null, p95: null, max: null },
+        };
+        const { catalog } = run(depsWith(JSON.stringify({
+            version: 1,
+            entries: [withNulls],
+        })));
+        expect(catalog?.entries).toHaveLength(1);
+        expect(catalog?.entries[0]?.latencyMs).toEqual({ p50: null, p95: null, max: null });
+        expect("notes" in (catalog?.entries[0] ?? {})).toBe(false);
+
+        const withNotes = { ...VALID_ENTRY, notes: "qualifying corpus replay report" };
+        const r2 = run(depsWith(JSON.stringify({
+            version: 1,
+            entries: [withNotes],
+        })));
+        expect(r2.catalog?.entries[0]).toMatchObject({
+            notes: "qualifying corpus replay report",
+        });
+    });
 });
 
 describe("classifyModel", () => {

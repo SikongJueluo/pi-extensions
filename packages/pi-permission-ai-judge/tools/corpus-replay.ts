@@ -359,7 +359,8 @@ import { qualifyReplay, type ReplayRow } from "./replay-qualify";
  * visibly stale. Date-based: <yyyy-mm-dd>.<n>. */
 export const CORPUS_VERSION = "2026-08-21.2";
 
-interface CliOptions {
+/** Parsed CLI options; exported for in-process tests. */
+export interface CliOptions {
     provider: string;
     model: string;
     timeoutMs: number;
@@ -368,122 +369,169 @@ interface CliOptions {
     strict: boolean;
 }
 
+/** Mutable parse state; frozen into a CliOptions at the end. */
+type CliState = { -readonly [K in keyof CliOptions]: CliOptions[K] };
+
+const VALUE_OPTIONS: Readonly<
+    Record<string, (state: CliState, value: string) => void>
+> = {
+    "--provider": (state, value) => {
+        state.provider = value;
+    },
+    "--model": (state, value) => {
+        state.model = value;
+    },
+    "--out": (state, value) => {
+        state.out = value;
+    },
+    "--case": (state, value) => {
+        state.cases = new Set(
+            value.split(",").map((c) => c.trim()).filter((c) => c.length > 0),
+        );
+    },
+};
+
+/** Apply `--timeout-ms`; exported for in-process tests. */
+export function applyTimeoutOption(
+    state: CliState,
+    value: string | undefined,
+): string | null {
+    const n = Number(value);
+    if (
+        value === undefined ||
+        !Number.isInteger(n) ||
+        n < MIN_TIMEOUT_MS ||
+        n > MAX_TIMEOUT_MS
+    ) {
+        return `--timeout-ms must be an integer in [${MIN_TIMEOUT_MS}, ${MAX_TIMEOUT_MS}]`;
+    }
+    state.timeoutMs = n;
+    return null;
+}
+
+/** Cross-option validation; exported for in-process tests. */
+export function validateCliState(state: CliState): string | null {
+    if (state.provider === "" || state.model === "") {
+        return "usage: corpus-replay --provider <p> --model <m> [--timeout-ms N] [--case a,b] [--out file.json] [--strict]";
+    }
+    // Qualification is defined over the full corpus; a --case subset is
+    // observation-only and must never be able to report qualified.
+    if (state.strict && state.cases !== null) {
+        return "--strict requires the full corpus; --case selects an observation-only subset";
+    }
+    return null;
+}
+
 /** Parse CLI options; exported for exit-contract tests. Any invalid
  * combination is an error string the caller turns into exit 1. */
 export function parseArgs(argv: readonly string[]): CliOptions | { error: string } {
     const args = argv.slice(2);
-    let provider = "";
-    let model = "";
-    let timeoutMs = DEFAULT_TIMEOUT_MS;
-    let cases: ReadonlySet<string> | null = null;
-    let out: string | null = null;
-    let strict = false;
+    const state: CliState = {
+        provider: "",
+        model: "",
+        timeoutMs: DEFAULT_TIMEOUT_MS,
+        cases: null,
+        out: null,
+        strict: false,
+    };
     for (let i = 0; i < args.length; i += 1) {
         const arg = args[i] as string;
-        const value = args[i + 1];
-        if (arg === "--provider" || arg === "--model" || arg === "--out" || arg === "--case") {
-            if (value === undefined) return { error: `${arg} requires a value` };
-            if (arg === "--provider") provider = value;
-            if (arg === "--model") model = value;
-            if (arg === "--out") out = value;
-            if (arg === "--case") {
-                cases = new Set(
-                    value.split(",").map((c) => c.trim()).filter((c) => c.length > 0),
-                );
+        const apply = VALUE_OPTIONS[arg];
+        if (apply !== undefined) {
+            const value = args[i + 1];
+            if (value === undefined) {
+                return { error: `${arg} requires a value` };
             }
+            apply(state, value);
             i += 1;
             continue;
         }
         if (arg === "--timeout-ms") {
-            const n = Number(value);
-            if (
-                value === undefined ||
-                !Number.isInteger(n) ||
-                n < MIN_TIMEOUT_MS ||
-                n > MAX_TIMEOUT_MS
-            ) {
-                return { error: `--timeout-ms must be an integer in [${MIN_TIMEOUT_MS}, ${MAX_TIMEOUT_MS}]` };
+            const error = applyTimeoutOption(state, args[i + 1]);
+            if (error !== null) {
+                return { error };
             }
-            timeoutMs = n;
             i += 1;
             continue;
         }
         if (arg === "--strict") {
-            strict = true;
+            state.strict = true;
             continue;
         }
         return { error: `unknown option: ${arg}` };
     }
-    if (provider === "" || model === "") {
-        return { error: "usage: corpus-replay --provider <p> --model <m> [--timeout-ms N] [--case a,b] [--out file.json] [--strict]" };
+    const error = validateCliState(state);
+    if (error !== null) {
+        return { error };
     }
-    // Qualification is defined over the full corpus; a --case subset is
-    // observation-only and must never be able to report qualified.
-    if (strict && cases !== null) {
-        return {
-            error:
-                "--strict requires the full corpus; --case selects an observation-only subset",
-        };
-    }
-    return { provider, model, timeoutMs, cases, out, strict };
+    return state;
 }
 
-async function main(): Promise<number> {
-    const parsed = parseArgs(process.argv);
-    if ("error" in parsed) {
-        process.stderr.write(`${parsed.error}\n`);
-        return 1;
-    }
-
+/**
+ * Resolve the replay model through the production seam: ModelRegistry
+ * lookup, configured-auth check, then createModelAvailability — the same
+ * forced-tool/output-cap path the online judge uses.
+ */
+async function resolveReplayModel(
+    provider: string,
+    model: string,
+): Promise<ModelAvailability | number> {
     const registry = new ModelRegistry(await ModelRuntime.create());
     await registry.refresh();
-    const model = registry.find(parsed.provider, parsed.model) as Model<any> | undefined;
-    if (model === undefined) {
+    const found = registry.find(provider, model) as Model<any> | undefined;
+    if (found === undefined) {
         process.stderr.write(
-            `error: model ${parsed.provider}/${parsed.model} not found in models.json\n`,
+            `error: model ${provider}/${model} not found in models.json\n`,
         );
         return 1;
     }
-    if (!registry.hasConfiguredAuth(model)) {
+    if (!registry.hasConfiguredAuth(found)) {
         process.stderr.write(
-            `error: no configured auth for ${parsed.provider}/${parsed.model}\n`,
+            `error: no configured auth for ${provider}/${model}\n`,
         );
         return 1;
     }
-
-    // Production adapter: registry.complete through the same seam the
-    // online judge uses (createModelAvailability), so this harness shares
-    // its forced-tool/output-cap behavior.
     const { createModelAvailability } = await import("../src/model");
-    const availability: ModelAvailability = createModelAvailability(model, registry);
+    const availability: ModelAvailability = createModelAvailability(found, registry);
     if (availability.kind !== "ready") {
         process.stderr.write(
             `error: model unavailable: ${availability.kind} (${JSON.stringify(availability.kind === "unsupported_api" ? availability.metadata : null)})\n`,
         );
         return 1;
     }
+    return availability;
+}
 
-    const shutdown = new AbortController();
-    const selected = parsed.cases === null
-        ? CORPUS
-        : CORPUS.filter((c) => (parsed.cases as ReadonlySet<string>).has(c.id));
-    const unknown = parsed.cases === null
-        ? []
-        : [...parsed.cases].filter((id) => !CORPUS.some((c) => c.id === id));
-    if (unknown.length > 0) {
-        process.stderr.write(`error: unknown case ids: ${unknown.join(", ")}\n`);
-        return 1;
+/** Select corpus cases by id; unknown ids are a hard error. Exported for tests. */
+export function selectCorpusCases(
+    cases: ReadonlySet<string> | null,
+): { selected: readonly CorpusCase[] } | { error: string } {
+    if (cases === null) {
+        return { selected: CORPUS };
     }
+    const selected = CORPUS.filter((c) => cases.has(c.id));
+    const unknown = [...cases].filter((id) => !CORPUS.some((c) => c.id === id));
+    if (unknown.length > 0) {
+        return { error: `unknown case ids: ${unknown.join(", ")}` };
+    }
+    return { selected };
+}
 
+/** Replay the selected cases, printing per-case progress to stderr. Exported for tests. */
+export async function replayCorpus(
+    selected: readonly CorpusCase[],
+    availability: ModelAvailability,
+    timeoutMs: number,
+    shutdownSignal: AbortSignal,
+): Promise<{ rows: ReplayRow[]; matched: number }> {
     const rows: ReplayRow[] = [];
     let matched = 0;
-    const startedAll = Date.now();
     for (const c of selected) {
         const attempt = await requestStructuredVerdict(
             availability,
             c.evidence,
-            shutdown.signal,
-            parsed.timeoutMs,
+            shutdownSignal,
+            timeoutMs,
             c.conversation,
         );
         let row: ReplayRow & { boundary?: string; code?: string };
@@ -515,6 +563,36 @@ async function main(): Promise<number> {
             `${c.id}: ${row.verdict ?? String(row.resultKind)} (expected ${c.expected}) ${row.match ? "MATCH" : "MISS"}\n`,
         );
     }
+    return { rows, matched };
+}
+
+async function main(): Promise<number> {
+    const parsed = parseArgs(process.argv);
+    if ("error" in parsed) {
+        process.stderr.write(`${parsed.error}\n`);
+        return 1;
+    }
+
+    const resolved = await resolveReplayModel(parsed.provider, parsed.model);
+    if (typeof resolved === "number") {
+        return resolved;
+    }
+
+    const selection = selectCorpusCases(parsed.cases);
+    if ("error" in selection) {
+        process.stderr.write(`error: ${selection.error}\n`);
+        return 1;
+    }
+
+    const shutdown = new AbortController();
+    const startedAll = Date.now();
+    const { rows, matched } = await replayCorpus(
+        selection.selected,
+        resolved,
+        parsed.timeoutMs,
+        shutdown.signal,
+    );
+    const selected = selection.selected;
 
     const qualification = qualifyReplay(rows, { budgetMs: parsed.timeoutMs });
     const report = {

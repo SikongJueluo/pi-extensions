@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AssistantMessage, Context } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Context, Model } from "@earendil-works/pi-ai";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import {
+    createModelAvailability,
     requestStructuredVerdict,
     type ModelAvailability,
 } from "../src/model";
@@ -48,6 +50,18 @@ function ready(
     ) => Promise<AssistantMessage>,
 ): ModelAvailability {
     return { kind: "ready", metadata, complete };
+}
+
+/** A minimal valid report_verdict tool-call content block. */
+function verdictContent(): AssistantMessage["content"] {
+    return [
+        {
+            type: "toolCall",
+            id: "call-1",
+            name: "report_verdict",
+            arguments: { verdict: "allow", reason: "bounded" },
+        },
+    ];
 }
 
 const evidence = {
@@ -231,6 +245,137 @@ describe("requestStructuredVerdict", () => {
         });
     });
 
+    it("rejects zero and non-finite output usage", async () => {
+        const zeroUsage = await requestStructuredVerdict(
+            ready(async () =>
+                response(verdictContent(), 0),
+            ),
+            evidence,
+            new AbortController().signal,
+        );
+        expect(zeroUsage).toMatchObject({ code: "model_error" });
+
+        const nonFiniteUsage = await requestStructuredVerdict(
+            ready(async () =>
+                response(verdictContent(), Number.NaN),
+            ),
+            evidence,
+            new AbortController().signal,
+        );
+        expect(nonFiniteUsage).toMatchObject({ code: "model_error" });
+    });
+
+    it("rejects responses without exactly one report_verdict tool call", async () => {
+        const noCall = await requestStructuredVerdict(
+            ready(async () =>
+                response([{ type: "text", text: "I would allow it." } as never]),
+            ),
+            evidence,
+            new AbortController().signal,
+        );
+        expect(noCall).toMatchObject({ code: "missing_tool_call" });
+
+        const wrongName = await requestStructuredVerdict(
+            ready(async () =>
+                response([
+                    {
+                        type: "toolCall",
+                        id: "call-1",
+                        name: "other_tool",
+                        arguments: { verdict: "allow", reason: "x" },
+                    },
+                ]),
+            ),
+            evidence,
+            new AbortController().signal,
+        );
+        expect(wrongName).toMatchObject({ code: "missing_tool_call" });
+    });
+
+    it("rejects null and array tool-call arguments", async () => {
+        const nullArgs = await requestStructuredVerdict(
+            ready(async () =>
+                response([
+                    {
+                        type: "toolCall",
+                        id: "call-1",
+                        name: "report_verdict",
+                        arguments: null as unknown as Record<string, unknown>,
+                    },
+                ]),
+            ),
+            evidence,
+            new AbortController().signal,
+        );
+        expect(nullArgs).toMatchObject({ code: "invalid_arguments" });
+
+        const arrayArgs = await requestStructuredVerdict(
+            ready(async () =>
+                response([
+                    {
+                        type: "toolCall",
+                        id: "call-1",
+                        name: "report_verdict",
+                        arguments: ["allow", "x"] as unknown as Record<string, unknown>,
+                    },
+                ]),
+            ),
+            evidence,
+            new AbortController().signal,
+        );
+        expect(arrayArgs).toMatchObject({ code: "invalid_arguments" });
+
+        const missingKey = await requestStructuredVerdict(
+            ready(async () =>
+                response([
+                    {
+                        type: "toolCall",
+                        id: "call-1",
+                        name: "report_verdict",
+                        arguments: { verdict: "allow" },
+                    },
+                ]),
+            ),
+            evidence,
+            new AbortController().signal,
+        );
+        expect(missingKey).toMatchObject({ code: "invalid_arguments" });
+    });
+
+    it("rejects non-string and blank-trimmed reasons", async () => {
+        const nonStringReason = await requestStructuredVerdict(
+            ready(async () =>
+                response([
+                    {
+                        type: "toolCall",
+                        id: "call-1",
+                        name: "report_verdict",
+                        arguments: { verdict: "defer", reason: 42 as unknown as string },
+                    },
+                ]),
+            ),
+            evidence,
+            new AbortController().signal,
+        );
+        expect(nonStringReason).toMatchObject({ code: "invalid_reason" });
+
+        const blankReason = await requestStructuredVerdict(
+            ready(async () =>
+                response([
+                    {
+                        type: "toolCall",
+                        id: "call-1",
+                        name: "report_verdict",
+                        arguments: { verdict: "defer", reason: "   " },
+                    },
+                ]),
+            ),
+            evidence,
+            new AbortController().signal,
+        );
+        expect(blankReason).toMatchObject({ code: "invalid_reason" });
+    });
+
     it("maps the bounded deadline to timeout", async () => {
         const waiting = ready(
             async (_context, signal) =>
@@ -319,3 +464,92 @@ describe("requestStructuredVerdict", () => {
         expect(timedOut).toMatchObject({ code: "timeout" });
     });
 });
+
+describe("createModelAvailability — per-API forced tool choice and output cap", () => {
+    it("returns no_model for an undefined model", () => {
+        expect(createModelAvailability(undefined, registryStub())).toEqual({
+            kind: "no_model",
+        });
+    });
+
+    it("returns unsupported_api for an unknown api", () => {
+        const availability = createModelAvailability(
+            modelWithApi("mystery-api"),
+            registryStub(),
+        );
+        expect(availability).toMatchObject({
+            kind: "unsupported_api",
+            metadata: { api: "mystery-api" },
+        });
+    });
+
+    it.each([
+        // [api, expected toolChoice, enforces output cap]
+        ["anthropic-messages", { type: "tool", name: "report_verdict" }, true],
+        ["bedrock-converse-stream", { type: "tool", name: "report_verdict" }, true],
+        ["google-generative-ai", "any", true],
+        ["google-vertex", "any", true],
+        ["openai-completions", { type: "function", function: { name: "report_verdict" } }, true],
+        ["mistral-conversations", { type: "function", function: { name: "report_verdict" } }, true],
+        ["pi-messages", { type: "function", function: { name: "report_verdict" } }, true],
+        ["openai-responses", { type: "function", name: "report_verdict" }, true],
+        ["azure-openai-responses", { type: "function", name: "report_verdict" }, true],
+        // Codex supports required but not named choice, and no output cap.
+        ["openai-codex-responses", "required", false],
+    ])("maps %s to its forced tool choice and cap policy", async (api, toolChoice, cap) => {
+        const calls: Array<Record<string, unknown>> = [];
+        const registry = registryStub({
+            complete: (_model, _context, options) => {
+                calls.push(options as Record<string, unknown>);
+                return Promise.resolve(response(verdictContent()));
+            },
+        });
+        const availability = createModelAvailability(modelWithApi(api), registry);
+        expect(availability).toMatchObject({ kind: "ready", metadata: { api } });
+
+        if (availability.kind === "ready") {
+            await availability.complete({} as never, new AbortController().signal);
+        }
+        expect(calls[0]?.toolChoice).toEqual(toolChoice);
+        if (cap) {
+            expect(calls[0]?.maxTokens).toBeTypeOf("number");
+        } else {
+            expect(calls[0]?.maxTokens).toBeUndefined();
+        }
+    });
+
+    it("forwards retry and cache policy to the registry", async () => {
+        let seen: Record<string, unknown> | undefined;
+        const registry = registryStub({
+            complete: (_m, _c, options) => {
+                seen = options as Record<string, unknown>;
+                return Promise.resolve(response(verdictContent()));
+            },
+        });
+        const availability = createModelAvailability(
+            modelWithApi("anthropic-messages"),
+            registry,
+        );
+        if (availability.kind === "ready") {
+            await availability.complete({} as never, new AbortController().signal);
+        }
+        expect(seen).toMatchObject({ maxRetries: 0, cacheRetention: "none" });
+    });
+});
+
+function modelWithApi(api: string): Model<any> {
+    return {
+        provider: "test-provider",
+        id: "test-model",
+        api,
+    } as unknown as Model<any>;
+}
+
+function registryStub(overrides: Partial<ModelRegistry> = {}): ModelRegistry {
+    return {
+        complete: () => {
+            throw new Error("not called");
+        },
+        ...overrides,
+    } as unknown as ModelRegistry;
+}
