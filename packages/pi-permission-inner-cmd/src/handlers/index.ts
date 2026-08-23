@@ -1,4 +1,5 @@
 import { envHandler } from "./env";
+import { timeHandler } from "./time";
 import { timeoutHandler } from "./timeout";
 import { xargsHandler } from "./xargs";
 import type { CommandHandler } from "./types";
@@ -10,6 +11,7 @@ import type { CommandHandler } from "./types";
  */
 export const handlers: readonly CommandHandler[] = [
     timeoutHandler,
+    timeHandler,
     envHandler,
     xargsHandler,
 ];

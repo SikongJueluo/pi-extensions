@@ -326,8 +326,11 @@ describe("authorizeInnerCommand — fail-closed deferrals", () => {
         expect(log).toEqual([
             {
                 level: "debug",
-                event: "inner_cmd.unsupported_timeout_syntax",
-                details: { command: "timeout -k 5s 30s pnpm test" },
+                event: "inner_cmd.unsupported_wrapper_syntax",
+                details: {
+                    command: "timeout -k 5s 30s pnpm test",
+                    wrapper: "timeout",
+                },
             },
         ]);
     });
@@ -342,10 +345,11 @@ describe("authorizeInnerCommand — fail-closed deferrals", () => {
         expect(log).toEqual([
             {
                 level: "debug",
-                event: "inner_cmd.nested_timeout",
+                event: "inner_cmd.nested_wrapper",
                 details: {
                     command: "timeout 30s timeout 10s pnpm test",
                     innerCommand: "timeout 10s pnpm test",
+                    wrapper: "timeout",
                 },
             },
         ]);
@@ -599,6 +603,176 @@ describe("authorizeInnerCommand — fail-closed deferrals", () => {
         });
         expect(verdict.kind).toBe("defer");
         expect(check).toEqual([]);
+    });
+});
+
+describe("authorizeInnerCommand — time wrapper", () => {
+    it("maps an inner allow to allow and records a review", async () => {
+        const { verdict, log, check } = await run({
+            recoveredCommand: "time pnpm test",
+            states: { "pnpm test": "allow" },
+        });
+        expect(verdict.kind).toBe("allow");
+        expect(log).toEqual([
+            {
+                level: "review",
+                event: "inner_cmd.allow",
+                details: {
+                    requestId: "req-1",
+                    command: "time pnpm test",
+                    innerCommand: "pnpm test",
+                },
+            },
+        ]);
+        expect(check).toEqual([
+            { surface: "bash", value: "pnpm test", agentName: undefined },
+        ]);
+    });
+
+    it("maps an inner deny to deny and an inner ask to defer", async () => {
+        const denied = await run({
+            recoveredCommand: "time rm -rf /",
+            states: { "rm -rf /": "deny" },
+        });
+        expect(denied.verdict.kind).toBe("deny");
+        expect(denied.log[0]?.event).toBe("inner_cmd.deny");
+
+        const asked = await run({
+            recoveredCommand: "time git push",
+            states: { "git push": "ask" },
+        });
+        expect(asked.verdict.kind).toBe("defer");
+        expect(asked.log[0]?.event).toBe("inner_cmd.inner_ask");
+    });
+
+    it("re-checks the complete inner program for compound input", async () => {
+        const { verdict, check } = await run({
+            recoveredCommand: "time pnpm test && git push",
+            states: { "pnpm test && git push": "ask" },
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(check).toEqual([
+            {
+                surface: "bash",
+                value: "pnpm test && git push",
+                agentName: undefined,
+            },
+        ]);
+    });
+
+    it("unwraps a time buried in a scaffold", async () => {
+        const full = "cd /repo && time pnpm install 2>&1 | tail -5";
+        const deWrapped = "cd /repo && pnpm install 2>&1 | tail -5";
+        const { verdict, log, check } = await run({
+            recoveredCommand: full,
+            unitCommand: "time pnpm install",
+            states: { [deWrapped]: "allow" },
+        });
+        expect(verdict.kind).toBe("allow");
+        expect(check).toEqual([
+            { surface: "bash", value: deWrapped, agentName: undefined },
+        ]);
+        expect(log).toEqual([
+            {
+                level: "review",
+                event: "inner_cmd.allow",
+                details: {
+                    requestId: "req-1",
+                    command: full,
+                    innerCommand: "pnpm install",
+                },
+            },
+        ]);
+    });
+
+    it("defers on unsupported time syntax with a debug log", async () => {
+        // `-p` (and any dash-leading modifier) makes the form unsupported:
+        // `/usr/bin/time` flags can write files (`-o`), and the command
+        // string cannot distinguish the reserved word from the binary.
+        const { verdict, log, check } = await run({
+            recoveredCommand: "time -p ls",
+            states: { ls: "allow" },
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(check).toEqual([]);
+        expect(log).toEqual([
+            {
+                level: "debug",
+                event: "inner_cmd.unsupported_wrapper_syntax",
+                details: { command: "time -p ls", wrapper: "time" },
+            },
+        ]);
+    });
+
+    it("defers on a bare time with no inner command", async () => {
+        const { verdict, log } = await run({
+            recoveredCommand: "time",
+            states: {},
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(log).toEqual([
+            {
+                level: "debug",
+                event: "inner_cmd.unsupported_wrapper_syntax",
+                details: { command: "time", wrapper: "time" },
+            },
+        ]);
+    });
+
+    it("defers on a nested wrapper (time wrapping time or timeout)", async () => {
+        const nested = await run({
+            recoveredCommand: "time time pnpm test",
+            states: { "pnpm test": "allow" },
+        });
+        expect(nested.verdict.kind).toBe("defer");
+        expect(nested.check).toEqual([]);
+        expect(nested.log).toEqual([
+            {
+                level: "debug",
+                event: "inner_cmd.nested_wrapper",
+                details: {
+                    command: "time time pnpm test",
+                    innerCommand: "time pnpm test",
+                    wrapper: "time",
+                },
+            },
+        ]);
+
+        const nestedTimeout = await run({
+            recoveredCommand: "time timeout 10s pnpm test",
+            states: { "timeout 10s pnpm test": "allow" },
+        });
+        expect(nestedTimeout.verdict.kind).toBe("defer");
+        expect(nestedTimeout.log[0]?.event).toBe("inner_cmd.nested_wrapper");
+    });
+
+    it("defers on timeout wrapping time (nested the other way)", async () => {
+        const { verdict, log, check } = await run({
+            recoveredCommand: "timeout 30s time pnpm test",
+            states: { "time pnpm test": "allow" },
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(check).toEqual([]);
+        expect(log).toEqual([
+            {
+                level: "debug",
+                event: "inner_cmd.nested_wrapper",
+                details: {
+                    command: "timeout 30s time pnpm test",
+                    innerCommand: "time pnpm test",
+                    wrapper: "timeout",
+                },
+            },
+        ]);
+    });
+
+    it("defers silently on /usr/bin/time (full path is not claimed)", async () => {
+        const { verdict, log } = await run({
+            recoveredCommand: "/usr/bin/time ls",
+            states: { ls: "allow" },
+        });
+        expect(verdict.kind).toBe("defer");
+        expect(log).toEqual([]);
     });
 });
 

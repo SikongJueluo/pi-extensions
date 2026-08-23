@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
     classifyWrapper,
     isRecognizedWrapper,
+    parseTimeWrapper,
     parseTimeoutWrapper,
 } from "../src/recognizer";
 
@@ -86,34 +87,101 @@ describe("parseTimeoutWrapper", () => {
     });
 });
 
+describe("parseTimeWrapper", () => {
+    it("matches the bare reserved-word form", () => {
+        expect(parseTimeWrapper("time pnpm test")).toEqual({
+            innerCommand: "pnpm test",
+        });
+        expect(parseTimeWrapper("time\techo hi")).toEqual({
+            innerCommand: "echo hi",
+        });
+        expect(parseTimeWrapper("time   build")).toEqual({
+            innerCommand: "build",
+        });
+    });
+
+    it("preserves compound inner programs as the inner command", () => {
+        expect(parseTimeWrapper("time pnpm test && git push")).toEqual({
+            innerCommand: "pnpm test && git push",
+        });
+        expect(parseTimeWrapper("time bash -c something")).toEqual({
+            innerCommand: "bash -c something",
+        });
+    });
+
+    it("rejects modifier args regardless of separator width", () => {
+        // A dash right after the separator means flags: not transparent.
+        expect(parseTimeWrapper("time -p ls")).toBeUndefined();
+        // Backtracking must not smuggle a leading space into the inner.
+        expect(parseTimeWrapper("time  -p ls")).toBeUndefined();
+        expect(parseTimeWrapper("time\t-- ls")).toBeUndefined();
+        expect(parseTimeWrapper("time -o out.txt ls")).toBeUndefined();
+    });
+
+    it("rejects a bare time and non-time commands", () => {
+        expect(parseTimeWrapper("time")).toBeUndefined();
+        expect(parseTimeWrapper("timeout 10s ls")).toBeUndefined();
+        expect(parseTimeWrapper("my-time ls")).toBeUndefined();
+        expect(parseTimeWrapper("/usr/bin/time ls")).toBeUndefined();
+    });
+});
+
 describe("isRecognizedWrapper", () => {
-    it("is true for the strict form and false otherwise", () => {
+    it("is true for the strict forms and false otherwise", () => {
         expect(isRecognizedWrapper("timeout 10s pnpm test")).toBe(true);
-        expect(isRecognizedWrapper("timeout 10s timeout 5s pnpm test")).toBe(true);
+        expect(isRecognizedWrapper("timeout 10s timeout 5s pnpm test")).toBe(
+            true,
+        );
+        expect(isRecognizedWrapper("time pnpm test")).toBe(true);
+        expect(isRecognizedWrapper("time timeout 5s pnpm test")).toBe(true);
+        expect(isRecognizedWrapper("timeout 10s time pnpm test")).toBe(true);
         expect(isRecognizedWrapper("pnpm test")).toBe(false);
         expect(isRecognizedWrapper("timeout -k 5s 30s pnpm test")).toBe(false);
+        expect(isRecognizedWrapper("time -p pnpm test")).toBe(false);
     });
 });
 
 describe("classifyWrapper", () => {
-    it("classifies the recognized wrapper", () => {
+    it("classifies recognized wrappers with their name", () => {
         expect(classifyWrapper("timeout 30s pnpm test")).toEqual({
             kind: "recognized",
+            wrapper: "timeout",
             match: { duration: "30s", innerCommand: "pnpm test" },
+        });
+        expect(classifyWrapper("time pnpm test")).toEqual({
+            kind: "recognized",
+            wrapper: "time",
+            match: { innerCommand: "pnpm test" },
         });
     });
 
-    it("classifies unsupported timeout syntax", () => {
-        expect(classifyWrapper("timeout -k 5s 30s pnpm test").kind).toBe(
-            "unsupportedTimeout",
-        );
-        expect(classifyWrapper("timeout 30s").kind).toBe("unsupportedTimeout");
-        expect(classifyWrapper("timeout --help").kind).toBe("unsupportedTimeout");
+    it("classifies unsupported wrapper syntax with its name", () => {
+        expect(classifyWrapper("timeout -k 5s 30s pnpm test")).toEqual({
+            kind: "unsupported",
+            wrapper: "timeout",
+        });
+        expect(classifyWrapper("timeout 30s")).toEqual({
+            kind: "unsupported",
+            wrapper: "timeout",
+        });
+        expect(classifyWrapper("timeout --help")).toEqual({
+            kind: "unsupported",
+            wrapper: "timeout",
+        });
+        expect(classifyWrapper("time -p ls")).toEqual({
+            kind: "unsupported",
+            wrapper: "time",
+        });
+        expect(classifyWrapper("time")).toEqual({
+            kind: "unsupported",
+            wrapper: "time",
+        });
     });
 
-    it("classifies ordinary commands as non-timeout", () => {
-        expect(classifyWrapper("pnpm test").kind).toBe("nonTimeout");
-        expect(classifyWrapper("rm -rf /").kind).toBe("nonTimeout");
-        expect(classifyWrapper("git push").kind).toBe("nonTimeout");
+    it("classifies ordinary commands as other", () => {
+        expect(classifyWrapper("pnpm test").kind).toBe("other");
+        expect(classifyWrapper("rm -rf /").kind).toBe("other");
+        expect(classifyWrapper("git push").kind).toBe("other");
+        expect(classifyWrapper("/usr/bin/time ls").kind).toBe("other");
     });
 });

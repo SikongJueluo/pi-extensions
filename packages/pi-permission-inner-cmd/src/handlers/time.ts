@@ -1,7 +1,7 @@
 import {
     isRecognizedWrapper,
-    parseTimeoutWrapper,
-    TIMEOUT_PREFIX,
+    parseTimeWrapper,
+    TIME_PREFIX,
 } from "../recognizer";
 import { stripWrapperUnit } from "./strip";
 import type { CommandHandler } from "./types";
@@ -10,21 +10,23 @@ import type { CommandHandler } from "./types";
 const BASH_SURFACE = "bash";
 
 /**
- * The simple-timeout wrapper handler (ADR 0001).
+ * The bare `time` wrapper handler (ADR 0009).
  *
- * Detection runs on the payload's decision-relevant command unit, which is
- * wrapper-leading even when the complete command is a scaffold that starts
- * with `cd`/`echo`/…. The wrapper is then stripped from the FULL command and the
- * whole de-wrapped
- * compound is re-evaluated, so sibling commands (including dangerous ones) are
- * still judged and cannot hide behind the wrapper's allow.
+ * `time <command>` — the Bash reserved-word timing form with no modifier
+ * args — is transparent: it runs the inner command unchanged and only adds
+ * timing. The wrapper is stripped from the FULL command and the whole
+ * de-wrapped compound is re-evaluated, exactly like `timeout`, so sibling
+ * commands (including dangerous ones) are still judged and cannot hide behind
+ * the wrapper's allow.
  *
- * Unsupported timeout syntax, a nested recognized wrapper (`timeout` or
- * `time`), a unit that cannot be located exactly once in the full command,
- * and any non-allowing re-evaluation all defer fail-closed.
+ * Unsupported time syntax (`time -p`, `time -- ls`, bare `time`), a nested
+ * recognized wrapper (`time time cmd`, `time timeout 10 cmd`), a unit that
+ * cannot be located exactly once in the full command, and any non-allowing
+ * re-evaluation all defer fail-closed. `/usr/bin/time` by full path is not
+ * claimed at all.
  */
-export const timeoutHandler: CommandHandler = {
-    id: "timeout",
+export const timeHandler: CommandHandler = {
+    id: "time",
     decide(ctx) {
         const {
             command: fullCommand,
@@ -35,14 +37,14 @@ export const timeoutHandler: CommandHandler = {
             evidence,
         } = ctx;
 
-        const unitMatch = parseTimeoutWrapper(unit);
+        const unitMatch = parseTimeWrapper(unit);
         if (unitMatch === undefined) {
-            // Not the recognized form. If it still names `timeout`, surface it
+            // Not the recognized form. If it still names `time`, surface it
             // as unsupported; otherwise this unit is not ours.
-            if (TIMEOUT_PREFIX.test(unit)) {
+            if (TIME_PREFIX.test(unit)) {
                 log.debug("inner_cmd.unsupported_wrapper_syntax", {
                     command: fullCommand,
-                    wrapper: "timeout",
+                    wrapper: "time",
                 });
                 return { kind: "defer" };
             }
@@ -52,12 +54,12 @@ export const timeoutHandler: CommandHandler = {
         const innerCommand = unitMatch.innerCommand;
         evidence.innerCommand = innerCommand;
 
-        // Never unwrap into another recognized wrapper (timeout or time).
+        // Never unwrap into another recognized wrapper.
         if (isRecognizedWrapper(innerCommand)) {
             log.debug("inner_cmd.nested_wrapper", {
                 command: fullCommand,
                 innerCommand,
-                wrapper: "timeout",
+                wrapper: "time",
             });
             return { kind: "defer" };
         }

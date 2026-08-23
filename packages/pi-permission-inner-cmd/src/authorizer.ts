@@ -91,13 +91,13 @@ export interface InnerCommandAuthorizerDeps {
 }
 
 /**
- * Inner-command Authorizer decision (ADRs 0001 and 0004).
+ * Inner-command Authorizer decision (ADRs 0001, 0004, and 0009).
  *
  * Revalidates root ownership, reads the complete native Bash command from the
  * structured prompt payload, then hands it to the first registered handler that
  * claims it. Each handler owns its own recognition and verdict logic: the
- * timeout handler unwraps one level and re-evaluates the inner command; the env
- * handler defers as non-transparent.
+ * timeout and time handlers unwrap one level and re-evaluate the inner
+ * command; the env and xargs handlers defer as non-transparent.
  *
  * Every uncertain path — forwarded requests, a session-identity mismatch,
  * non-Bash tools, malformed payload evidence, an unrecognized command, or any

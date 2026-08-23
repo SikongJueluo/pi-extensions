@@ -1,9 +1,10 @@
 /**
- * V0.1 wrapper recognizer.
+ * Wrapper recognizers (ADRs 0001 and 0009).
  *
- * The simple-timeout grammar from ADR 0001. V0.1 unwraps exactly
- * `timeout <duration> <command>`; every other `timeout` invocation is left to
- * the next authority.
+ * Two transparent wrappers are recognized in their strict bare forms:
+ * `timeout <duration> <command>` (ADR 0001) and `time <command>` (ADR 0009,
+ * the Bash reserved-word timing form with no modifier args). Every other
+ * invocation of either program is left to the next authority.
  */
 
 /**
@@ -21,8 +22,26 @@
 const TIMEOUT_WRAPPER_PATTERN =
     /^timeout[ \t]+([1-9][0-9]*(?:\.[0-9]+)?[smhd]?)[ \t]+(.+)$/;
 
+/**
+ * Matches `time <command>` — the bare timing wrapper with no modifier args.
+ * A dash immediately after the separator (any amount of whitespace) means
+ * modifier args are present (`time -p ls`, `time -- ls`, or a `/usr/bin/time`
+ * flag such as `-o FILE`, which writes a file). Those can change what the
+ * wrapper does beyond timing, so the form is not recognized and never
+ * unwrapped. The lookahead also rejects a whitespace-only remainder, so
+ * regex backtracking cannot smuggle a leading space into the inner command.
+ */
+const TIME_WRAPPER_PATTERN = /^time[ \t]+(?![-\s])(.+)$/;
+
 /** A command that begins with the bare `timeout` wrapper program. */
 export const TIMEOUT_PREFIX = /^timeout(?:[ \t]|$)/;
+
+/**
+ * A command that begins with the word `time` — the Bash reserved word or the
+ * `/usr/bin/time`-style binary invoked by bare name. Full-path invocations
+ * (`/usr/bin/time cmd`) do not match and are not claimed by any handler.
+ */
+export const TIME_PREFIX = /^time(?:[ \t]|$)/;
 
 export interface TimeoutWrapperMatch {
     readonly duration: string;
@@ -49,37 +68,79 @@ export function parseTimeoutWrapper(
     };
 }
 
-/**
- * Whether a command is itself a recognized wrapper. Used to reject nested
- * wrappers so v0.1 unwraps at most one level.
- */
-export function isRecognizedWrapper(command: string): boolean {
-    return parseTimeoutWrapper(command) !== undefined;
+export interface TimeWrapperMatch {
+    readonly innerCommand: string;
 }
 
-/** How a complete Bash command relates to the v0.1 recognizer. */
-export type WrapperClassification =
-    | { readonly kind: "recognized"; readonly match: TimeoutWrapperMatch }
-    | { readonly kind: "unsupportedTimeout" }
-    | { readonly kind: "nonTimeout" };
+/**
+ * Parse a command as the bare `time` wrapper (ADR 0009).
+ *
+ * @returns the full inner command (including any `&&`/`;`/`|` siblings), or
+ * `undefined` when the command is not the recognized bare `time <command>`
+ * form.
+ */
+export function parseTimeWrapper(
+    command: string,
+): TimeWrapperMatch | undefined {
+    const match = TIME_WRAPPER_PATTERN.exec(command);
+    if (match === null) {
+        return undefined;
+    }
+    return { innerCommand: match[1] };
+}
 
 /**
- * Classify a complete Bash command against the v0.1 recognizer.
+ * Whether a command is itself a recognized wrapper (timeout or time, in their
+ * strict bare forms). Used to reject nested wrappers so at most one level is
+ * ever unwrapped.
+ */
+export function isRecognizedWrapper(command: string): boolean {
+    return (
+        parseTimeoutWrapper(command) !== undefined ||
+        parseTimeWrapper(command) !== undefined
+    );
+}
+
+/**
+ * A recognized wrapper, tagged with which grammar recognized it.
  *
- * - `recognized`: the strict simple-timeout wrapper.
- * - `unsupportedTimeout`: the command invokes `timeout` but is not the
+ * The `wrapper` discriminator tells consumers which `match` shape applies
+ * without a union-widening cast.
+ */
+export type RecognizedWrapper =
+    | { readonly wrapper: "timeout"; readonly match: TimeoutWrapperMatch }
+    | { readonly wrapper: "time"; readonly match: TimeWrapperMatch };
+
+/** How a complete Bash command relates to the recognizers. */
+export type WrapperClassification =
+    | ({ readonly kind: "recognized" } & RecognizedWrapper)
+    | { readonly kind: "unsupported"; readonly wrapper: "timeout" | "time" }
+    | { readonly kind: "other" };
+
+/**
+ * Classify a complete Bash command against the recognizers.
+ *
+ * - `recognized`: one of the strict bare wrapper forms.
+ * - `unsupported`: the command invokes `timeout` or `time` but is not the
  *   recognized strict form (flags, `-k`, missing command, ...). These are
  *   logged at debug so an operator can see why a wrapper was skipped.
- * - `nonTimeout`: an ordinary command this authorizer does not handle. These
- *   defer silently.
+ * - `other`: an ordinary command this authorizer does not handle. These defer
+ *   silently.
  */
 export function classifyWrapper(command: string): WrapperClassification {
-    const match = parseTimeoutWrapper(command);
-    if (match !== undefined) {
-        return { kind: "recognized", match };
+    const timeoutMatch = parseTimeoutWrapper(command);
+    if (timeoutMatch !== undefined) {
+        return { kind: "recognized", wrapper: "timeout", match: timeoutMatch };
+    }
+    const timeMatch = parseTimeWrapper(command);
+    if (timeMatch !== undefined) {
+        return { kind: "recognized", wrapper: "time", match: timeMatch };
     }
     if (TIMEOUT_PREFIX.test(command)) {
-        return { kind: "unsupportedTimeout" };
+        return { kind: "unsupported", wrapper: "timeout" };
     }
-    return { kind: "nonTimeout" };
+    if (TIME_PREFIX.test(command)) {
+        return { kind: "unsupported", wrapper: "time" };
+    }
+    return { kind: "other" };
 }
