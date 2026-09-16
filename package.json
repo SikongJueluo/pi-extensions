@@ -14,7 +14,8 @@
   },
   "pi": {
     "extensions": [
-      "./packages/pi-permission-inner-cmd/src/index.ts"
+      "./packages/pi-permission-inner-cmd/src/index.ts",
+      "./packages/pi-permission-ai-judge/src/index.ts"
     ]
   },
   "devDependencies": {
