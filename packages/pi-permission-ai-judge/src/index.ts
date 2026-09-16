@@ -581,10 +581,10 @@ async function judgeAuthorize(
 }
 
 /**
- * One non-blocking session notice in Enforce mode: the risk contract and
- * the effective judge model (ADR 0008). Not repeated per ask. The advisory
- * model catalog (PIEXTENSIO-24) only annotates this notice — it never gates
- * authority.
+ * One non-blocking session notice in Enforce mode: the effective judge
+ * model and the risk contract in one line (ADR 0008). Not repeated per
+ * ask. The advisory model catalog (PIEXTENSIO-24) only annotates this
+ * notice — it never gates authority.
  */
 function notifyEnforceActive(
     notify: (message: string, kind: "info" | "warning") => void,
@@ -596,7 +596,7 @@ function notifyEnforceActive(
     let judgeModelDescription: string;
     let classification: ModelCatalogClassification | null;
     if (configured !== undefined) {
-        judgeModelDescription = `${configured.provider}/${configured.id} (configured)`;
+        judgeModelDescription = `${configured.provider}/${configured.id}`;
         classification = classifyModel(
             catalog,
             configured.provider,
@@ -604,11 +604,10 @@ function notifyEnforceActive(
         );
     } else {
         if (sessionModel === undefined) {
-            judgeModelDescription =
-                "the current session model (none resolved yet)";
+            judgeModelDescription = "session model (none yet)";
             classification = null;
         } else {
-            judgeModelDescription = `${sessionModel.provider}/${sessionModel.id} (current session model)`;
+            judgeModelDescription = `${sessionModel.provider}/${sessionModel.id} (session model)`;
             classification = classifyModel(
                 catalog,
                 sessionModel.provider,
@@ -618,12 +617,12 @@ function notifyEnforceActive(
     }
     const catalogNote =
         classification === "unlisted"
-            ? " This model is untested in the advisory catalog — used at your own risk."
+            ? " Model untested in advisory catalog."
             : classification === "deprecated" || classification === "revoked"
-              ? ` Advisory catalog status: ${classification}.`
+              ? ` Catalog status: ${classification}.`
               : "";
     notify(
-        `ai-bash-judge Enforce active: ${judgeModelDescription} judges Bash asks; allow skips the dialog — you accept the risk of model misjudgment (ADR 0008). High-risk shapes (irreversible, publish, system, credentials) always ask.${catalogNote}`,
+        `ai-bash-judge Enforce active — ${judgeModelDescription} may auto-allow Bash; high-risk commands still ask.${catalogNote}`,
         "info",
     );
 }
@@ -698,7 +697,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
         });
         for (const diagnostic of catalogResult.diagnostics) {
             ctx.ui.notify(
-                `ai-bash-judge advisory catalog: ${diagnostic.key} — ${diagnostic.problem}; treating as empty`,
+                `ai-bash-judge catalog: ${diagnostic.key} — ${diagnostic.problem}; treated as empty`,
                 "warning",
             );
         }
