@@ -76,6 +76,9 @@ function createFakeSessionManager(
     } as unknown as ExtensionContext["sessionManager"];
 }
 
+/** The default fake session id — the key the service publishes under. */
+const SESSION_ID = "session-root";
+
 describe("permissions:ready -> registerAuthorizer lifecycle", () => {
     let registerAuthorizer: ReturnType<typeof vi.fn>;
     let disposer: ReturnType<typeof vi.fn>;
@@ -104,7 +107,7 @@ describe("permissions:ready -> registerAuthorizer lifecycle", () => {
     });
 
     afterEach(() => {
-        if (published) unpublishPermissionsService(service);
+        if (published) unpublishPermissionsService(SESSION_ID, service);
     });
 
     /**
@@ -113,7 +116,7 @@ describe("permissions:ready -> registerAuthorizer lifecycle", () => {
      * available, so an early `session_start` cannot register yet.
      */
     function becomeReady(): void {
-        publishPermissionsService(service);
+        publishPermissionsService(SESSION_ID, service);
         published = true;
     }
 
@@ -228,7 +231,6 @@ describe("permissions:ready -> registerAuthorizer lifecycle", () => {
                 requestId: "req-1",
                 source: "tool_call",
                 agentName: "child",
-                message: "forwarded ask",
                 payload: {
                     kind: "forwarded",
                     request: {

@@ -10,7 +10,7 @@
   "type": "module",
   "private": true,
   "dependencies": {
-    "@gotgenes/pi-permission-system": "^25.4.0"
+    "@gotgenes/pi-permission-system": "^32.0.2"
   },
   "pi": {
     "extensions": [
@@ -18,6 +18,6 @@
     ]
   },
   "devDependencies": {
-    "fallow": "^3.17.0"
+    "fallow": "^3.25.0"
   }
 }

@@ -12,7 +12,7 @@
     ]
   },
   "dependencies": {
-    "@gotgenes/pi-permission-system": "^25.4.0"
+    "@gotgenes/pi-permission-system": "^32.0.2"
   },
   "bundledDependencies": [
     "@gotgenes/pi-permission-system"
@@ -21,12 +21,12 @@
     "@earendil-works/pi-coding-agent": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@types/node": "^26.0.0",
-    "@vitest/coverage-istanbul": "3.2.7",
-    "@vitest/coverage-v8": "^3.2.7",
-    "typescript": "^5",
-    "vitest": "^3"
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@types/node": "^26.5.1",
+    "@vitest/coverage-istanbul": "5.0.1",
+    "@vitest/coverage-v8": "^5.0.1",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
   },
   "scripts": {
     "check": "tsc --noEmit",

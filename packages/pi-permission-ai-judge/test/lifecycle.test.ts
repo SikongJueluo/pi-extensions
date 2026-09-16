@@ -122,7 +122,6 @@ function ask(): PromptPermissionDetails {
         requestId: "req-1",
         source: "tool_call",
         agentName: null,
-        message: "bash ask",
         payload: {
             kind: "bash",
             request: {
@@ -204,10 +203,13 @@ function fakeSessionManager(): {
     };
 }
 
+/** The session id every fake session manager reports — the service key. */
+const SESSION_ID = "session-root";
+
 let publishedService: PermissionsService | undefined;
 afterEach(() => {
     if (publishedService !== undefined) {
-        unpublishPermissionsService(publishedService);
+        unpublishPermissionsService(SESSION_ID, publishedService);
         publishedService = undefined;
     }
     cleanupMockAgentDir();
@@ -230,7 +232,7 @@ describe("AI judge lifecycle", () => {
             checkPermission: vi.fn(),
             getToolPermission: vi.fn(),
         } as unknown as PermissionsService;
-        publishPermissionsService(service);
+        publishPermissionsService(SESSION_ID, service);
         publishedService = service;
 
         // A mutable "current model" the session switches mid-run.
@@ -312,7 +314,7 @@ describe("AI judge lifecycle", () => {
             checkPermission: vi.fn(),
             getToolPermission: vi.fn(),
         } as unknown as PermissionsService;
-        publishPermissionsService(service);
+        publishPermissionsService(SESSION_ID, service);
         publishedService = service;
 
         const complete = vi.fn(
@@ -383,7 +385,7 @@ describe("AI judge lifecycle", () => {
             checkPermission: vi.fn(),
             getToolPermission: vi.fn(),
         } as unknown as PermissionsService;
-        publishPermissionsService(service);
+        publishPermissionsService(SESSION_ID, service);
         publishedService = service;
 
         const complete = vi.fn(
@@ -477,7 +479,7 @@ describe("AI judge lifecycle", () => {
             checkPermission: vi.fn(),
             getToolPermission: vi.fn(),
         } as unknown as PermissionsService;
-        publishPermissionsService(service);
+        publishPermissionsService(SESSION_ID, service);
         publishedService = service;
 
         const complete = vi.fn();
@@ -552,7 +554,7 @@ describe("AI judge lifecycle", () => {
             checkPermission: vi.fn(),
             getToolPermission: vi.fn(),
         } as unknown as PermissionsService;
-        publishPermissionsService(service);
+        publishPermissionsService(SESSION_ID, service);
         publishedService = service;
 
         const complete = vi.fn(
@@ -622,7 +624,7 @@ describe("AI judge lifecycle", () => {
         const service = {
             registerAuthorizer: vi.fn(),
         } as unknown as PermissionsService;
-        publishPermissionsService(service);
+        publishPermissionsService(SESSION_ID, service);
         publishedService = service;
 
         const harness = createFakePi();
@@ -682,7 +684,7 @@ describe("AI judge Enforce authority seam (PIEXTENSIO-23, ADR 0008)", () => {
             checkPermission: vi.fn(),
             getToolPermission: vi.fn(),
         } as unknown as PermissionsService;
-        publishPermissionsService(service);
+        publishPermissionsService(SESSION_ID, service);
         publishedService = service;
 
         const complete = vi.fn(async () => options.response ?? modelResponse());
@@ -920,7 +922,7 @@ describe("AI judge Enforce authority seam (PIEXTENSIO-23, ADR 0008)", () => {
             checkPermission: vi.fn(),
             getToolPermission: vi.fn(),
         } as unknown as PermissionsService;
-        publishPermissionsService(service);
+        publishPermissionsService(SESSION_ID, service);
         publishedService = service;
 
         const complete = vi.fn(async () => modelResponse());

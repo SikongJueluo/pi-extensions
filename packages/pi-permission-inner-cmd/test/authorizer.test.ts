@@ -67,7 +67,6 @@ function bashDetails(
         requestId: "req-1",
         source: "tool_call",
         agentName,
-        message: "May I run bash?",
         payload: {
             kind: "bash",
             request: {

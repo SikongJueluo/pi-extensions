@@ -10,7 +10,6 @@ function details(
         requestId: "req-1",
         source: "tool_call",
         agentName: null,
-        message: "bash ask",
         payload: {
             kind: "bash",
             request: {

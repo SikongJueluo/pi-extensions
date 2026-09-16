@@ -32,7 +32,12 @@ export default function permissionInnerCmd(pi: ExtensionAPI): void {
             return;
         }
 
-        const service = getPermissionsService();
+        // Resolve by the live session id, not the start-time snapshot: a
+        // mid-session id change republishes under the new key and re-emits
+        // the ready channel, so the dynamic read re-keys onto it.
+        const service = getPermissionsService(
+            rootSession.session.getSessionId(),
+        );
         if (!service) {
             return;
         }

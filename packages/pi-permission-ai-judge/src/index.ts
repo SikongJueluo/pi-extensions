@@ -639,7 +639,10 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
             return;
         }
 
-        const service = getPermissionsService();
+        // Resolve the service by the live session id: the ready channel
+        // re-emits after a mid-session republish (31.1.4), and the dynamic
+        // read re-keys onto the new slot without extra state.
+        const service = getPermissionsService(root.getSessionId());
         if (service === undefined) {
             return;
         }

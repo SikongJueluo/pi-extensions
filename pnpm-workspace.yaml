@@ -6,4 +6,4 @@ allowBuilds:
   protobufjs: false
   tree-sitter-bash: true
 minimumReleaseAgeExclude:
-  - '@gotgenes/pi-permission-system@25.3.0'
+  - '@gotgenes/pi-permission-system@25.3.0 || 32.0.4'
