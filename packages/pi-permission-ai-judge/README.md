@@ -12,10 +12,16 @@ enforce 是自担风险的便利模式：模型误判，危险命令可能在无
 ## 安装
 
 ```bash
+pi install npm:@sikongjueluo/pi-permission-ai-judge
+```
+
+或从仓库安装：
+
+```bash
 pi install github.com/SikongJueluo/pi-extensions
 ```
 
-前提：项目启用 [`@gotgenes/pi-permission-system`](https://github.com/gotgenes/pi-permission-system) ≥ 25.4，并把判官挂进授权链（链按书写顺序依次咨询，仅 UI 会话生效）：
+前提：项目启用 [`@gotgenes/pi-permission-system`](https://github.com/gotgenes/pi-permission-system) ≥ 32，并把判官挂进授权链（链按书写顺序依次咨询，仅 UI 会话生效）：
 
 ```json
 // .pi/extensions/pi-permission-system/config.json

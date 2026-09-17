@@ -1,11 +1,28 @@
 {
   "name": "@sikongjueluo/pi-permission-ai-judge",
   "version": "0.0.1",
+  "description": "pi extension: AI judge for pending Bash permission prompts — allow / deny / defer verdicts in shadow or enforce mode",
   "type": "module",
+  "license": "GPL-3.0-only",
+  "author": "SikongJueluo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SikongJueluo/pi-extensions.git",
+    "directory": "packages/pi-permission-ai-judge"
+  },
   "keywords": [
     "pi-package",
     "pi-extension"
   ],
+  "files": [
+    "src",
+    "models-catalog.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "pi": {
     "extensions": [
       "./src/index.ts"

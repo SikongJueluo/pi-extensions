@@ -1,27 +1,39 @@
 {
   "name": "@sikongjueluo/pi-permission-inner-cmd",
   "version": "0.0.1",
+  "description": "pi extension: an inner-command Authorizer that routes native Bash asks from pi inner commands through the pi-permission-system dialog",
   "type": "module",
+  "license": "GPL-3.0-only",
+  "author": "SikongJueluo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SikongJueluo/pi-extensions.git",
+    "directory": "packages/pi-permission-inner-cmd"
+  },
   "keywords": [
     "pi-package",
     "pi-extension"
   ],
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "pi": {
     "extensions": [
       "./src/index.ts"
     ]
   },
-  "dependencies": {
-    "@gotgenes/pi-permission-system": "^32.0.2"
-  },
-  "bundledDependencies": [
-    "@gotgenes/pi-permission-system"
-  ],
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "*",
+    "@gotgenes/pi-permission-system": ">=32.0.0"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@gotgenes/pi-permission-system": "^32.0.2",
     "@types/node": "^26.5.1",
     "@vitest/coverage-istanbul": "5.0.1",
     "@vitest/coverage-v8": "^5.0.1",

@@ -243,14 +243,13 @@ importers:
         version: 5.0.1(@opentelemetry/api@1.9.0)(@types/node@26.5.1)(@vitest/coverage-istanbul@5.0.1)(@vitest/coverage-v8@5.0.1)(vite@7.3.6(@types/node@26.5.1)(jiti@2.7.0)(yaml@2.9.0))
 
   packages/pi-permission-inner-cmd:
-    dependencies:
-      '@gotgenes/pi-permission-system':
-        specifier: ^32.0.2
-        version: 32.0.2(@earendil-works/pi-coding-agent@0.85.1)(@earendil-works/pi-tui@0.85.1)
     devDependencies:
       '@earendil-works/pi-coding-agent':
         specifier: ^0.85.1
         version: 0.85.1(supports-color@7.2.0)(ws@8.21.3)(zod@4.6.5)
+      '@gotgenes/pi-permission-system':
+        specifier: ^32.0.2
+        version: 32.0.2(@earendil-works/pi-coding-agent@0.85.1)(@earendil-works/pi-tui@0.85.1)
       '@types/node':
         specifier: ^26.5.1
         version: 26.5.1
