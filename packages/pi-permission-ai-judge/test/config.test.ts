@@ -25,6 +25,7 @@ describe("loadJudgeConfig — missing and malformed", () => {
             timeoutMs: 15_000,
             timeoutCohort: "default",
             judgeModel: undefined,
+            dialogAdvice: true,
             diagnostics: [
                 expect.objectContaining({ key: "file", fallback: "all defaults" }),
             ],
@@ -44,6 +45,42 @@ describe("loadJudgeConfig — missing and malformed", () => {
         const config = loadJudgeConfig(deps({ [CONFIG_PATH]: "[1,2,3]" }));
         expect(config.mode).toBe("shadow");
         expect(config.diagnostics[0]?.key).toBe("file");
+    });
+});
+
+describe("loadJudgeConfig — dialogAdvice", () => {
+    it("defaults to true when absent", () => {
+        const config = loadJudgeConfig(
+            deps({ [CONFIG_PATH]: JSON.stringify({ version: 2 }) }),
+        );
+        expect(config.dialogAdvice).toBe(true);
+        expect(config.diagnostics).toEqual([]);
+    });
+
+    it("accepts an explicit false", () => {
+        const config = loadJudgeConfig(
+            deps({
+                [CONFIG_PATH]: JSON.stringify({ version: 2, dialogAdvice: false }),
+            }),
+        );
+        expect(config.dialogAdvice).toBe(false);
+        expect(config.diagnostics).toEqual([]);
+    });
+
+    it("falls back to true with a diagnostic on a non-boolean", () => {
+        const config = loadJudgeConfig(
+            deps({
+                [CONFIG_PATH]: JSON.stringify({ version: 2, dialogAdvice: "yes" }),
+            }),
+        );
+        expect(config.dialogAdvice).toBe(true);
+        expect(config.diagnostics).toEqual([
+            {
+                key: "dialogAdvice",
+                problem: 'not a boolean: "yes"',
+                fallback: "true",
+            },
+        ]);
     });
 });
 
@@ -246,6 +283,7 @@ describe("loadJudgeConfig — snapshot immutability", () => {
             timeoutMs: 20_000,
             timeoutCohort: 20_000,
             judgeModel: { provider: "p", id: "m" },
+            dialogAdvice: true,
             diagnostics: [],
         });
     });

@@ -6,7 +6,9 @@ import type { Model } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import {
     getPermissionsService,
+    PERMISSIONS_DECISION_CHANNEL,
     PERMISSIONS_READY_CHANNEL,
+    type PermissionDecisionEvent,
     type PromptPermissionDetails,
     type AuthorizerLog,
     type AuthorizerVerdict,
@@ -28,6 +30,11 @@ import {
     type ConversationEvidence,
 } from "./evidence/conversation";
 import { classifyHighRisk, type HighRiskMatch } from "./authority/highrisk";
+import {
+    AdvicePresenter,
+    type AdviceFocus,
+    type AdviceView,
+} from "./advice/widget";
 import { evaluateEnforceAuthority, type EnforceGateState } from "./authority/enforce";
 import {
     classifyModel,
@@ -60,6 +67,8 @@ interface RootSession {
     readonly getCwd: () => string;
     /** Judge-owned audit log (ADR 0006); unhealthy refuses Enforce authority. */
     readonly auditLog: AuditLog;
+    /** Dialog-advice widget presenter (no-op when disabled by config). */
+    readonly advice: AdvicePresenter;
 }
 
 const EMPTY_CONVERSATION: ConversationEvidence = {
@@ -363,6 +372,10 @@ function runPreflightGates(
         details.forwarding !== undefined ||
         details.payload.kind === "forwarded"
     ) {
+        ctx.captured.advice.present(details.requestId, {
+            state: "unavailable",
+            cause: "forwarded ask carries no structured bash input",
+        });
         return {
             kind: "stop",
             verdict: preflightDefer(
@@ -378,6 +391,10 @@ function runPreflightGates(
     }
 
     if (captured.getSessionId() !== captured.expectedSessionId) {
+        ctx.captured.advice.present(details.requestId, {
+            state: "unavailable",
+            cause: "session ownership unproven",
+        });
         return {
             kind: "stop",
             verdict: preflightDefer(
@@ -390,6 +407,10 @@ function runPreflightGates(
 
     const evidence = buildBashJudgmentEvidence(details);
     if (evidence === undefined) {
+        ctx.captured.advice.present(details.requestId, {
+            state: "unavailable",
+            cause: "bash evidence missing or invalid",
+        });
         return {
             kind: "stop",
             verdict: preflightDefer(
@@ -402,6 +423,11 @@ function runPreflightGates(
 
     const risk = classifyHighRisk(evidence.fullCommand);
     if (risk !== undefined && captured.config.mode === "enforce") {
+        ctx.captured.advice.present(
+            details.requestId,
+            { state: "skipped", category: risk.category, rule: risk.rule },
+            buildAdviceFocus(evidence, risk, details),
+        );
         return {
             kind: "stop",
             verdict: preflightDefer(
@@ -439,6 +465,10 @@ function prepareModelCall(
         captured.modelRegistry,
     );
     if (resolved.kind === "unavailable") {
+        ctx.captured.advice.present(ctx.details.requestId, {
+            state: "unavailable",
+            cause: "judge model unresolved",
+        });
         infrastructureDefer(
             ctx,
             "judge_model_unavailable",
@@ -479,6 +509,7 @@ function enforceAndEmit(
     conversation: ConversationEvidence,
     risk: HighRiskMatch | undefined,
     modelSource: "configured" | "session",
+    adviceFocus: AdviceFocus | undefined,
 ): AuthorizerVerdict {
     const gateState: EnforceGateState = {
         auditHealthy: captured.auditLog.healthy(),
@@ -508,6 +539,28 @@ function enforceAndEmit(
         emitInfrastructureResult(
             ctx, result, conversation,
             effectiveVerdict, authorityBlockedBy, modelSource, risk,
+        );
+    }
+
+    // Dialog advice rides only the defer arm: an Enforce allow never shows
+    // a dialog, so there is nothing for the widget to annotate.
+    if (authority.kind !== "allow") {
+        const view: AdviceView =
+            result.kind === "judgment"
+                ? {
+                      state: "judgment",
+                      verdict: result.verdict,
+                      reason: result.reason,
+                      shadow: captured.config.mode === "shadow",
+                  }
+                : {
+                      state: "unavailable",
+                      cause: `model call failed (${result.kind})`,
+                  };
+        ctx.captured.advice.present(
+            ctx.details.requestId,
+            view,
+            adviceFocus,
         );
     }
 
@@ -570,14 +623,50 @@ async function judgeAuthorize(
         return enforceAndEmit(
             ctx, captured, sink, result, conversation, gate.risk,
             prepared.modelSource,
+            buildAdviceFocus(gate.evidence, gate.risk, details),
         );
     } catch {
         // A link exception would abort the whole authority chain.
         // Keep provider/payload/session failures fail-closed and do
         // not include raw errors or authorization evidence in logs.
         sink.debug("ai_bash_judge.exception");
+        captured.advice.present(details.requestId, {
+            state: "unavailable",
+            cause: "judge internal error",
+        });
         return { kind: "defer" };
     }
+}
+
+/**
+ * Focus cascade for the dialog-advice widget (PIEXTENSIO-13): the
+ * high-risk match segment when one exists, else the unit that triggered
+ * the ask, else the executed unit the payload carries. Omitted when the
+ * payload offers nothing narrower than the full command.
+ */
+function buildAdviceFocus(
+    evidence: BashJudgmentEvidence,
+    risk: HighRiskMatch | undefined,
+    details: PromptPermissionDetails,
+): AdviceFocus | undefined {
+    if (risk !== undefined) {
+        return {
+            segment: evidence.triggeringUnit ?? evidence.fullCommand,
+            origin: "high-risk",
+            category: risk.category,
+        };
+    }
+    if (evidence.triggeringUnit !== undefined) {
+        return {
+            segment: evidence.triggeringUnit,
+            origin: "triggering-unit",
+        };
+    }
+    const executedUnit = details.payload.request.executedUnit;
+    if (executedUnit !== null && executedUnit !== undefined) {
+        return { segment: executedUnit, origin: "executed-unit" };
+    }
+    return undefined;
 }
 
 /**
@@ -681,6 +770,7 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
             }),
             conversation: conversationProbeFromSession(ctx.sessionManager),
             getCwd: () => ctx.sessionManager.getCwd(),
+            advice: new AdvicePresenter(ctx.ui, config.dialogAdvice),
         };
         for (const diagnostic of root.config.diagnostics) {
             ctx.ui.notify(
@@ -714,8 +804,20 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
 
     pi.events.on(PERMISSIONS_READY_CHANNEL, tryRegister);
 
+    // Dialog-advice lifecycle (PIEXTENSIO-13): the permission system
+    // broadcasts one decision per request; the one resolving the request
+    // the widget describes takes the widget down with it.
+    pi.events.on(
+        PERMISSIONS_DECISION_CHANNEL,
+        (data: unknown) => {
+            const event = data as PermissionDecisionEvent;
+            root?.advice.handleDecision(event.requestId);
+        },
+    );
+
     pi.on("session_shutdown", () => {
         root?.shutdown.abort();
+        root?.advice.shutdown();
         disposeAuthorizer?.();
         disposeAuthorizer = undefined;
         root = undefined;

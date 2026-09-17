@@ -253,7 +253,7 @@ describe("AI judge lifecycle", () => {
                 return currentModel;
             },
             modelRegistry: { complete },
-            ui: { notify: vi.fn() },
+            ui: { notify: vi.fn(), setWidget: vi.fn() },
         } as unknown as ExtensionContext;
 
         const harness = createFakePi();
@@ -342,7 +342,7 @@ describe("AI judge lifecycle", () => {
                 api: "openai-codex-responses",
             } as Model<any>,
             modelRegistry: { complete },
-            ui: { notify: vi.fn() },
+            ui: { notify: vi.fn(), setWidget: vi.fn() },
         } as unknown as ExtensionContext;
 
         const harness = createFakePi();
@@ -406,7 +406,7 @@ describe("AI judge lifecycle", () => {
             sessionManager,
             model,
             modelRegistry: { complete },
-            ui: { notify: vi.fn() },
+            ui: { notify: vi.fn(), setWidget: vi.fn() },
         } as unknown as ExtensionContext;
 
         const harness = createFakePi();
@@ -492,7 +492,7 @@ describe("AI judge lifecycle", () => {
                 api: "openai-codex-responses",
             } as Model<any>,
             modelRegistry: { complete },
-            ui: { notify: vi.fn() },
+            ui: { notify: vi.fn(), setWidget: vi.fn() },
         } as unknown as ExtensionContext;
 
         const harness = createFakePi();
@@ -571,7 +571,7 @@ describe("AI judge lifecycle", () => {
                 api: "openai-codex-responses",
             } as Model<any>,
             modelRegistry: { complete },
-            ui: { notify: vi.fn() },
+            ui: { notify: vi.fn(), setWidget: vi.fn() },
         } as unknown as ExtensionContext;
 
         const harness = createFakePi();
@@ -701,7 +701,7 @@ describe("AI judge Enforce authority seam (PIEXTENSIO-23, ADR 0008)", () => {
                 api: "openai-codex-responses",
             } as Model<any>,
             modelRegistry: { complete, find, hasConfiguredAuth },
-            ui: { notify },
+            ui: { notify, setWidget: vi.fn() },
         } as unknown as ExtensionContext;
 
         const harness = createFakePi();
@@ -936,7 +936,7 @@ describe("AI judge Enforce authority seam (PIEXTENSIO-23, ADR 0008)", () => {
                 api: "openai-codex-responses",
             } as Model<any>,
             modelRegistry: { complete, find: vi.fn(), hasConfiguredAuth: vi.fn(() => true) },
-            ui: { notify },
+            ui: { notify, setWidget: vi.fn() },
         } as unknown as ExtensionContext;
 
         const harness = createFakePi();

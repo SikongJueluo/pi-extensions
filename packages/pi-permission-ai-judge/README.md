@@ -9,6 +9,17 @@ pi 的 Bash 权限 AI 判官：每条待确认的 Bash 命令先交给模型，�
 
 enforce 是自担风险的便利模式：模型误判，危险命令可能在无人确认时执行。退出方式：mode 改回 shadow。
 
+## 弹窗意见挂件
+
+每次弹窗出现前，判官会在编辑器上方挂一个意见面板，说明自己的判断和理由，长命令会标注重点片段（focus 行）：
+
+```
+ai-judge defer — command rewrites published history; intent not established
+focus: git push --force origin main (high-risk: history_rewrite)
+```
+
+三态：`defer/deny/allow` 判决带理由（shadow 模式标 `(shadow)`）；高风险跳过标类别；模型不可用/超时/异常标 `unavailable`。弹窗被处理后挂件自动消失。配置 `dialogAdvice: false` 关闭。
+
 ## 安装
 
 ```bash
@@ -47,6 +58,7 @@ pi install github.com/SikongJueluo/pi-extensions
 | `mode` | `shadow`（默认）或 `enforce`，非法值回退 shadow |
 | `model` | 可选，固定判官模型；不写则跟随会话模型。解析失败按故障处理并弹窗，绝不静默改用会话模型 |
 | `timeoutMs` | 单次判决等待上限，5000–30000，默认 15000 |
+| `dialogAdvice` | `true`（默认）或 `false`；弹窗期间的判官意见挂件开关 |
 
 ## enforce 的防线
 

@@ -40,6 +40,8 @@ export interface EffectiveJudgeConfig {
     readonly timeoutCohort: "default" | number;
     /** Fixed judge model (v2 only); undefined follows the session model. */
     readonly judgeModel: JudgeModelSelection | undefined;
+    /** Show the dialog-advice widget while a permission dialog is up. */
+    readonly dialogAdvice: boolean;
     /** Validation diagnostics for the loaded raw file, newest wins per key. */
     readonly diagnostics: readonly ConfigDiagnostic[];
 }
@@ -64,6 +66,7 @@ const DEFAULT_CONFIG: EffectiveJudgeConfig = {
     timeoutMs: DEFAULT_TIMEOUT_MS,
     timeoutCohort: "default",
     judgeModel: undefined,
+    dialogAdvice: true,
     diagnostics: [],
 };
 
@@ -224,6 +227,28 @@ function parseTimeout(record: Record<string, unknown>): {
  * diagnostic. Version 1 / unversioned files keep v1 semantics except
  * that `enforce` fails closed to shadow pending explicit migration.
  */
+/** Parse `dialogAdvice`: absent keeps the default (true); invalid falls back. */
+function parseDialogAdvice(
+    record: Record<string, unknown>,
+): { dialogAdvice: boolean; diagnostics: ConfigDiagnostic[] } {
+    if (record.dialogAdvice === undefined) {
+        return { dialogAdvice: true, diagnostics: [] };
+    }
+    if (typeof record.dialogAdvice === "boolean") {
+        return { dialogAdvice: record.dialogAdvice, diagnostics: [] };
+    }
+    return {
+        dialogAdvice: true,
+        diagnostics: [
+            {
+                key: "dialogAdvice",
+                problem: `not a boolean: ${JSON.stringify(record.dialogAdvice)}`,
+                fallback: "true",
+            },
+        ],
+    };
+}
+
 export function loadJudgeConfig(
     deps: ConfigLoadDeps,
 ): EffectiveJudgeConfig {
@@ -289,12 +314,16 @@ export function loadJudgeConfig(
     const timeoutResult = parseTimeout(record);
     diagnostics.push(...timeoutResult.diagnostics);
 
+    const adviceResult = parseDialogAdvice(record);
+    diagnostics.push(...adviceResult.diagnostics);
+
     return Object.freeze({
         configVersion,
         mode,
         timeoutMs: timeoutResult.timeoutMs,
         timeoutCohort: timeoutResult.timeoutCohort,
         judgeModel: modelResult.judgeModel,
+        dialogAdvice: adviceResult.dialogAdvice,
         diagnostics,
     });
 }
