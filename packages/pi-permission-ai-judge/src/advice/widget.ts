@@ -1,4 +1,4 @@
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { HighRiskCategory } from "../authority/highrisk";
 
 /**
@@ -79,18 +79,19 @@ function sanitizeLine(text: string, maxChars: number): string {
     return `${chars.slice(0, maxChars - 1).join("")}…`;
 }
 
-/** Clamp a rendered line to the live terminal width.
+/** Wrap a rendered line to the live terminal width.
  *
- * Delegates to pi-tui's ANSI- and wide-char-aware truncation: theme-styled
+ * Delegates to pi-tui's ANSI- and wide-char-aware wrapping: theme-styled
  * text counts only visible cells, so CJK reasons cannot overflow the
  * terminal (the crash class pi-tui reports as "Rendered line exceeds
- * terminal width").
+ * terminal width"), and long reasons wrap to further lines instead of
+ * being cut — the human sees the whole reason, not a prefix.
  */
-function clampToWidth(styledLine: string, width: number): string {
+function wrapToWidth(styledLine: string, width: number): string[] {
     if (width <= 0) {
-        return "";
+        return [""];
     }
-    return truncateToWidth(styledLine, width, "…");
+    return wrapTextWithAnsi(styledLine, width);
 }
 
 export interface AdviceLines {
@@ -168,8 +169,8 @@ export class AdvicePresenter {
         const { lines, colors } = formatAdvice(view, focus);
         this.ui.setWidget(ADVICE_WIDGET_KEY, (_tui, theme) => ({
             render: (width: number) =>
-                lines.map((line, index) =>
-                    clampToWidth(
+                lines.flatMap((line, index) =>
+                    wrapToWidth(
                         theme.fg(colors[index] ?? "dim", line),
                         width,
                     ),

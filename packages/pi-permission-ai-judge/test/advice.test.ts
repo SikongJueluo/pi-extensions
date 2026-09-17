@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
+
+/** Tail length used to prove wrapping loses no content. */
+const REASON_TAIL = 10;
+
+function stripAnsi(text: string): string {
+    return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
 import {
     ADVICE_WIDGET_KEY,
     AdvicePresenter,
@@ -143,20 +150,24 @@ describe("AdvicePresenter", () => {
         expect(render(component, 200)).toEqual([
             "\x1b[35mai-judge defer — ambiguous intent\x1b[0m",
         ]);
-        const clamped = render(component, 10)[0]!;
-        expect(clamped.startsWith("\x1b[35mai-judge ")).toBe(true);
-        expect(clamped.endsWith("…"));
-        expect(visibleWidth(clamped)).toBeLessThanOrEqual(10);
+        const clamped = render(component, 10);
+        expect(clamped.length).toBeGreaterThan(1);
+        for (const line of clamped) {
+            expect(visibleWidth(line)).toBeLessThanOrEqual(10);
+        }
+        const joined = clamped.map(stripAnsi).join("").replace(/\s+/g, "");
+        expect(joined).toContain("ambiguousintent");
         component.invalidate();
     });
 
-    it("never renders wider than the terminal for CJK reasons", () => {
+    it("never renders wider than the terminal and loses no CJK text", () => {
         const ui = recordingUi();
         const presenter = new AdvicePresenter(ui, true);
+        const reason = "命令会重写已发布的历史记录且用户意图未确立".repeat(10);
         presenter.present("req-1", {
             state: "judgment",
             verdict: "defer",
-            reason: "命令会重写已发布的历史记录且用户意图未确立".repeat(10),
+            reason,
             shadow: false,
         });
         const factory = ui.calls[0]!.content as (
@@ -169,8 +180,12 @@ describe("AdvicePresenter", () => {
             for (const line of lines) {
                 expect(visibleWidth(line)).toBeLessThanOrEqual(width);
             }
+            expect(visibleWidth(lines[0]!)).toBeGreaterThan(0);
         }
-        expect(visibleWidth(render(component, 20)[0]!)).toBeGreaterThan(0);
+        // Wrapping, not truncation: the full (sanitized) reason survives.
+        const sanitized = [...reason].slice(0, 180).join("");
+        const joined = render(component, 20).map(stripAnsi).join("");
+        expect(joined).toContain(sanitized.slice(-REASON_TAIL));
     });
 
     it("is a no-op end to end when disabled", () => {
