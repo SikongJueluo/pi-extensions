@@ -6,18 +6,27 @@
 
 ## 包
 
-| 包 | 说明 |
-|---|---|
-| [pi-permission-ai-judge](packages/pi-permission-ai-judge) | AI 判官。模型对每条待确认的 Bash 命令给出 allow / deny / defer；shadow 只记日志，enforce 代批放行 |
-| [pi-permission-inner-cmd](packages/pi-permission-inner-cmd) | 解包透明包装命令（`timeout`、`time` 等），按内层命令授权 |
+| 包 | npm | 说明 |
+|---|---|---|
+| [pi-permission-ai-judge](packages/pi-permission-ai-judge) | [@sikongjueluo/pi-permission-ai-judge](https://www.npmjs.com/package/@sikongjueluo/pi-permission-ai-judge) | AI 判官。模型对每条待确认的 Bash 命令给出 allow / deny / defer；shadow 只记日志，enforce 代批放行 |
+| [pi-permission-inner-cmd](packages/pi-permission-inner-cmd) | [@sikongjueluo/pi-permission-inner-cmd](https://www.npmjs.com/package/@sikongjueluo/pi-permission-inner-cmd) | 解包透明包装命令（`timeout`、`time` 等），按内层命令授权 |
 
 ## 安装
+
+按包从 npm 安装：
+
+```bash
+pi install npm:@sikongjueluo/pi-permission-ai-judge
+pi install npm:@sikongjueluo/pi-permission-inner-cmd
+```
+
+或整仓 git 安装（两个扩展经根 `package.json` 的 `pi.extensions` 清单挂载）：
 
 ```bash
 pi install git:github.com/SikongJueluo/pi-extensions
 ```
 
-包清单（根 `package.json` 的 `pi.extensions`）声明式挂载两个扩展，任意目录生效。前提：
+两种方式均任意目录生效。前提：
 
 1. 启用 [`@gotgenes/pi-permission-system`](https://github.com/gotgenes/pi-permission-system) ≥ 32
 2. 把扩展挂进授权链——顺序即咨询顺序，仅 UI 会话生效：

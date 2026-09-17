@@ -6,18 +6,27 @@ Personal extensions for the [pi](https://www.npmjs.com/package/@earendil-works/p
 
 ## Packages
 
-| Package | Description |
-|---|---|
-| [pi-permission-ai-judge](packages/pi-permission-ai-judge) | AI judge — a model rules allow / deny / defer on each pending Bash ask; shadow logs only, enforce auto-approves |
-| [pi-permission-inner-cmd](packages/pi-permission-inner-cmd) | Unwraps transparent Bash wrappers (`timeout`, `time`, …) and authorizes the inner command |
+| Package | npm | Description |
+|---|---|---|
+| [pi-permission-ai-judge](packages/pi-permission-ai-judge) | [@sikongjueluo/pi-permission-ai-judge](https://www.npmjs.com/package/@sikongjueluo/pi-permission-ai-judge) | AI judge — a model rules allow / deny / defer on each pending Bash ask; shadow logs only, enforce auto-approves |
+| [pi-permission-inner-cmd](packages/pi-permission-inner-cmd) | [@sikongjueluo/pi-permission-inner-cmd](https://www.npmjs.com/package/@sikongjueluo/pi-permission-inner-cmd) | Unwraps transparent Bash wrappers (`timeout`, `time`, …) and authorizes the inner command |
 
 ## Install
+
+Per package from npm:
+
+```bash
+pi install npm:@sikongjueluo/pi-permission-ai-judge
+pi install npm:@sikongjueluo/pi-permission-inner-cmd
+```
+
+Or the whole repo via git (both extensions mount through the root `package.json` `pi.extensions` manifest):
 
 ```bash
 pi install git:github.com/SikongJueluo/pi-extensions
 ```
 
-The package manifest (root `package.json`, `pi.extensions`) mounts both extensions declaratively — effective in any directory. Prerequisites:
+Either way, effective in any directory. Prerequisites:
 
 1. Enable [`@gotgenes/pi-permission-system`](https://github.com/gotgenes/pi-permission-system) ≥ 32
 2. Add the extensions to the authorizer chain — order is consultation order, UI sessions only:
