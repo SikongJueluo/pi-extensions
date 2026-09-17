@@ -5,7 +5,8 @@
     "check": "pnpm -r check",
     "test": "pnpm -r test",
     "fallow": "fallow",
-    "fallow:fix": "fallow fix --dry-run"
+    "fallow:fix": "fallow fix --dry-run",
+    "publish:packages": "pnpm -r publish --no-git-checks"
   },
   "type": "module",
   "private": true,
