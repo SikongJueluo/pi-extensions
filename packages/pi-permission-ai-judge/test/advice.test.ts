@@ -103,18 +103,31 @@ describe("formatAdvice", () => {
         expect(advice.lines[1]).toBe("focus: x y (executed-unit)");
     });
 
-    it("clamps long reasons and segments with an ellipsis", () => {
-        const long = "a".repeat(400);
+    it("clamps pathological reasons and segments with an ellipsis", () => {
+        const long = "a".repeat(4000);
         const advice = formatAdvice(
             { state: "judgment", verdict: "defer", reason: long, shadow: false },
             { segment: long, origin: "triggering-unit" },
         );
-        expect([...advice.lines[0]!].length).toBe("ai-judge defer — ".length + 180);
+        expect([...advice.lines[0]!].length).toBe("ai-judge defer — ".length + 600);
         expect(advice.lines[0]!.endsWith("…")).toBe(true);
         const focusLine = advice.lines[1]!;
         const segment = focusLine.slice("focus: ".length, focusLine.lastIndexOf(" ("));
-        expect([...segment].length).toBe(120);
+        expect([...segment].length).toBe(240);
         expect(segment.endsWith("…")).toBe(true);
+    });
+
+    it("keeps ordinary multi-sentence reasons complete", () => {
+        const reason =
+            "命令会重写已发布的历史记录且用户意图未确立。".repeat(6);
+        const advice = formatAdvice({
+            state: "judgment",
+            verdict: "defer",
+            reason,
+            shadow: false,
+        });
+        expect(advice.lines[0]!.endsWith("。"));
+        expect(advice.lines[0]!.endsWith("…")).toBe(false);
     });
 });
 
@@ -133,7 +146,7 @@ function recordingUi(): AdviceWidgetUi & {
 describe("AdvicePresenter", () => {
     it("sets a themed widget on present and clamps to render width", () => {
         const ui = recordingUi();
-        const presenter = new AdvicePresenter(ui, true);
+        const presenter = new AdvicePresenter(ui, undefined, true);
         presenter.present("req-1", {
             state: "judgment",
             verdict: "defer",
@@ -162,7 +175,7 @@ describe("AdvicePresenter", () => {
 
     it("never renders wider than the terminal and loses no CJK text", () => {
         const ui = recordingUi();
-        const presenter = new AdvicePresenter(ui, true);
+        const presenter = new AdvicePresenter(ui, undefined, true);
         const reason = "命令会重写已发布的历史记录且用户意图未确立".repeat(10);
         presenter.present("req-1", {
             state: "judgment",
@@ -182,15 +195,14 @@ describe("AdvicePresenter", () => {
             }
             expect(visibleWidth(lines[0]!)).toBeGreaterThan(0);
         }
-        // Wrapping, not truncation: the full (sanitized) reason survives.
-        const sanitized = [...reason].slice(0, 180).join("");
+        // Wrapping, not truncation: the full reason survives the render.
         const joined = render(component, 20).map(stripAnsi).join("");
-        expect(joined).toContain(sanitized.slice(-REASON_TAIL));
+        expect(joined).toContain(reason.slice(-REASON_TAIL));
     });
 
     it("is a no-op end to end when disabled", () => {
         const ui = recordingUi();
-        const presenter = new AdvicePresenter(ui, false);
+        const presenter = new AdvicePresenter(ui, undefined, false);
         presenter.present("req-1", {
             state: "unavailable",
             cause: "off",
@@ -202,7 +214,7 @@ describe("AdvicePresenter", () => {
 
     it("clears only on the decision that resolves the current request", () => {
         const ui = recordingUi();
-        const presenter = new AdvicePresenter(ui, true);
+        const presenter = new AdvicePresenter(ui, undefined, true);
         presenter.present("req-1", { state: "unavailable", cause: "x" });
         presenter.handleDecision("req-other");
         expect(ui.calls).toHaveLength(1);
@@ -213,7 +225,7 @@ describe("AdvicePresenter", () => {
 
     it("a later present re-keys the clear guard onto the new request", () => {
         const ui = recordingUi();
-        const presenter = new AdvicePresenter(ui, true);
+        const presenter = new AdvicePresenter(ui, undefined, true);
         presenter.present("req-1", { state: "unavailable", cause: "x" });
         presenter.present("req-2", { state: "unavailable", cause: "y" });
         presenter.handleDecision("req-1");
@@ -225,7 +237,7 @@ describe("AdvicePresenter", () => {
 
     it("shutdown clears the widget", () => {
         const ui = recordingUi();
-        const presenter = new AdvicePresenter(ui, true);
+        const presenter = new AdvicePresenter(ui, undefined, true);
         presenter.present("req-1", { state: "unavailable", cause: "x" });
         presenter.shutdown();
         expect(ui.calls.at(-1)).toEqual({
@@ -233,13 +245,31 @@ describe("AdvicePresenter", () => {
             content: undefined,
         });
     });
+
+    it("emits a sanitized auto-allow notify", () => {
+        const notify = vi.fn();
+        const presenter = new AdvicePresenter(recordingUi(), notify, true);
+        presenter.notifyAllowed("  command   matches\nexplicit user intent  ");
+        expect(notify).toHaveBeenCalledWith(
+            "ai-bash-judge auto-allowed — command matches explicit user intent",
+            "info",
+        );
+    });
+
+    it("skips the auto-allow notify when disabled", () => {
+        const notify = vi.fn();
+        const presenter = new AdvicePresenter(recordingUi(), notify, false);
+        presenter.notifyAllowed("r");
+        presenter.present("r", { state: "unavailable", cause: "x" });
+        expect(notify).not.toHaveBeenCalled();
+    });
 });
 
 describe("AdvicePresenter with a real ExtensionUIContext-shaped ui", () => {
     it("accepts the overload-style setWidget surface", () => {
         const setWidget = vi.fn();
         const ui = { setWidget } as unknown as AdviceWidgetUi;
-        const presenter = new AdvicePresenter(ui, true);
+        const presenter = new AdvicePresenter(ui, undefined, true);
         presenter.present("r", { state: "unavailable", cause: "shape" });
         expect(setWidget).toHaveBeenCalledWith(
             ADVICE_WIDGET_KEY,

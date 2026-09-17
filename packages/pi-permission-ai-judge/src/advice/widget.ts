@@ -40,6 +40,9 @@ export interface AdviceWidgetUi {
     ): void;
 }
 
+/** Transient-notification seam (ctx.ui.notify's narrow shape). */
+export type AdviceNotify = (message: string, kind: "info") => void;
+
 /** What the judge concluded, in dialog-facing vocabulary. */
 export type AdviceView =
     | {
@@ -66,10 +69,15 @@ export interface AdviceFocus {
     readonly category?: HighRiskCategory;
 }
 
-const REASON_MAX_CHARS = 180;
-const SEGMENT_MAX_CHARS = 120;
+const REASON_MAX_CHARS = 600;
+const SEGMENT_MAX_CHARS = 240;
 
-/** Collapse model prose to one line and clamp its length (code-point aware). */
+/**
+ * Collapse model prose to one logical line and clamp pathological length
+ * (code-point aware). The cap is a sanity guard against runaway model
+ * output, not a display budget: rendering wraps to the terminal width, so
+ * everything under the cap is shown in full.
+ */
 function sanitizeLine(text: string, maxChars: number): string {
     const collapsed = text.replace(/\s+/g, " ").trim();
     const chars = [...collapsed];
@@ -155,10 +163,16 @@ export function formatAdvice(
  */
 export class AdvicePresenter {
     private readonly ui: AdviceWidgetUi | undefined;
+    private readonly notify: AdviceNotify | undefined;
     private currentRequestId: string | undefined;
 
-    constructor(ui: AdviceWidgetUi | undefined, enabled: boolean) {
+    constructor(
+        ui: AdviceWidgetUi | undefined,
+        notify: AdviceNotify | undefined,
+        enabled: boolean,
+    ) {
         this.ui = enabled ? ui : undefined;
+        this.notify = enabled ? notify : undefined;
     }
 
     present(requestId: string, view: AdviceView, focus?: AdviceFocus): void {
@@ -177,6 +191,21 @@ export class AdvicePresenter {
                 ),
             invalidate: () => {},
         }));
+    }
+
+    /**
+     * Transient trace for an Enforce auto-allow: no dialog ever shows, so
+     * there is no widget — a notify line keeps the delegation auditable
+     * (PIEXTENSIO-13 option 3: visibility without interruption).
+     */
+    notifyAllowed(reason: string): void {
+        if (this.notify === undefined) {
+            return;
+        }
+        this.notify(
+            `ai-bash-judge auto-allowed — ${sanitizeLine(reason, REASON_MAX_CHARS)}`,
+            "info",
+        );
     }
 
     /** Clear the widget iff the decision resolves the request it describes. */

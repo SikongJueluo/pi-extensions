@@ -543,30 +543,33 @@ function enforceAndEmit(
     }
 
     // Dialog advice rides only the defer arm: an Enforce allow never shows
-    // a dialog, so there is nothing for the widget to annotate.
-    if (authority.kind !== "allow") {
-        const view: AdviceView =
-            result.kind === "judgment"
-                ? {
-                      state: "judgment",
-                      verdict: result.verdict,
-                      reason: result.reason,
-                      shadow: captured.config.mode === "shadow",
-                  }
-                : {
-                      state: "unavailable",
-                      cause: `model call failed (${result.kind})`,
-                  };
-        ctx.captured.advice.present(
-            ctx.details.requestId,
-            view,
-            adviceFocus,
-        );
+    // a dialog, so there is nothing for the widget to annotate — instead a
+    // transient notify keeps the auto-approval auditable.
+    if (authority.kind === "allow") {
+        if (result.kind === "judgment") {
+            ctx.captured.advice.notifyAllowed(result.reason);
+        }
+        return { kind: "allow" };
     }
 
-    return authority.kind === "allow"
-        ? { kind: "allow" }
-        : { kind: "defer" };
+    const view: AdviceView =
+        result.kind === "judgment"
+            ? {
+                  state: "judgment",
+                  verdict: result.verdict,
+                  reason: result.reason,
+                  shadow: captured.config.mode === "shadow",
+              }
+            : {
+                  state: "unavailable",
+                  cause: `model call failed (${result.kind})`,
+              };
+    ctx.captured.advice.present(
+        ctx.details.requestId,
+        view,
+        adviceFocus,
+    );
+    return { kind: "defer" };
 }
 
 /**
@@ -770,7 +773,11 @@ export default function permissionAiJudge(pi: ExtensionAPI): void {
             }),
             conversation: conversationProbeFromSession(ctx.sessionManager),
             getCwd: () => ctx.sessionManager.getCwd(),
-            advice: new AdvicePresenter(ctx.ui, config.dialogAdvice),
+            advice: new AdvicePresenter(
+                ctx.ui,
+                (message, kind) => ctx.ui.notify(message, kind),
+                config.dialogAdvice,
+            ),
         };
         for (const diagnostic of root.config.diagnostics) {
             ctx.ui.notify(

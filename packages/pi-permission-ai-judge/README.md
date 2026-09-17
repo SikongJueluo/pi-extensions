@@ -20,6 +20,8 @@ focus: git push --force origin main (high-risk: history_rewrite)
 
 三态：`defer/deny/allow` 判决带理由（shadow 模式标 `(shadow)`）；高风险跳过标类别；模型不可用/超时/异常标 `unavailable`。弹窗被处理后挂件自动消失。配置 `dialogAdvice: false` 关闭。
 
+Enforce 模式下判官代批（auto-allow，无弹窗）时会发一条非阻塞通知 `ai-bash-judge auto-allowed — <理由>` 留痕，代批决策可审计。
+
 ## 安装
 
 ```bash
