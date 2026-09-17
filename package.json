@@ -9,6 +9,7 @@
     "publish:packages": "pnpm -r publish --no-git-checks"
   },
   "type": "module",
+  "packageManager": "pnpm@11.25.0",
   "private": true,
   "dependencies": {
     "@gotgenes/pi-permission-system": "^32.0.2"

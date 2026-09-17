@@ -1,0 +1,71 @@
+# Publishes a single package when a `<npm-name>@<version>` tag is pushed.
+# The tag must match name+version in packages/<pkg>/package.json exactly;
+# otherwise the workflow fails without touching the registry.
+name: publish
+
+on:
+  push:
+    tags:
+      - "*@*"
+
+permissions:
+  contents: read
+  id-token: write # npm provenance; remove if the repository is private
+
+concurrency:
+  group: publish-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4 # reads packageManager from package.json
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: Resolve package from tag
+        id: pkg
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          name="${tag%@*}"    # strip @version (handles @scope/ names)
+          version="${tag##*@}"
+          dir="packages/${name#*/}"
+          if [ ! -f "$dir/package.json" ]; then
+            echo "::error::no package at $dir for tag $tag" >&2
+            exit 1
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches package.json
+        run: |
+          name="${{ steps.pkg.outputs.name }}"
+          version="${{ steps.pkg.outputs.version }}"
+          dir="${{ steps.pkg.outputs.dir }}"
+          pkg_name=$(jq -r '.name' "$dir/package.json")
+          pkg_version=$(jq -r '.version' "$dir/package.json")
+          if [ "$pkg_name" != "$name" ] || [ "$pkg_version" != "$version" ]; then
+            echo "::error::tag $name@$version does not match $dir/package.json ($pkg_name@$pkg_version)" >&2
+            exit 1
+          fi
+          echo "Publishing $pkg_name@$pkg_version"
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm -r check
+
+      - run: pnpm -r test
+
+      - name: Publish
+        run: pnpm --filter "${{ steps.pkg.outputs.name }}" publish --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_PROVENANCE: true

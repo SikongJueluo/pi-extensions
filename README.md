@@ -50,6 +50,17 @@ pnpm test    # vitest run
 
 Design decisions live in [docs/adr/](docs/adr/).
 
+## Release
+
+Bump the version in `packages/<pkg>/package.json`, commit, then tag and push:
+
+```bash
+jj tag set @sikongjueluo/pi-permission-ai-judge@0.1.0 -r <rev>
+jj git push   # pushes the bookmark and new tags
+```
+
+The [publish workflow](.github/workflows/publish.yml) verifies the tag matches the `package.json` name and version, runs check and tests, then publishes to npm with provenance. Requires the `NPM_TOKEN` repository secret (granular token with publish rights on the `@sikongjueluo` scope, or a classic automation token).
+
 ## License
 
 GPL-3.0

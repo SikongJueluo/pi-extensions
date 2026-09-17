@@ -50,6 +50,17 @@ pnpm test    # vitest run
 
 设计决策见 [docs/adr/](docs/adr/)。
 
+## 发版
+
+先改 `packages/<pkg>/package.json` 的版本号并提交，然后打 tag、推送：
+
+```bash
+jj tag set @sikongjueluo/pi-permission-ai-judge@0.1.0 -r <rev>
+jj git push   # 推送 bookmark 和新 tag
+```
+
+[发布工作流](.github/workflows/publish.yml)会校验 tag 与 `package.json` 的 name、version 完全一致，跑 check 和 test，通过后带 provenance 发布到 npm。需要在仓库配置 `NPM_TOKEN` secret（对 `@sikongjueluo` scope 有发布权限的 granular token，或经典 automation token）。
+
 ## License
 
 GPL-3.0
