@@ -1,3 +1,4 @@
+import { truncateToWidth } from "@earendil-works/pi-tui";
 import type { HighRiskCategory } from "../authority/highrisk";
 
 /**
@@ -78,18 +79,18 @@ function sanitizeLine(text: string, maxChars: number): string {
     return `${chars.slice(0, maxChars - 1).join("")}…`;
 }
 
-/** Clamp a rendered line to the live terminal width. */
-function clampToWidth(line: string, width: number): string {
+/** Clamp a rendered line to the live terminal width.
+ *
+ * Delegates to pi-tui's ANSI- and wide-char-aware truncation: theme-styled
+ * text counts only visible cells, so CJK reasons cannot overflow the
+ * terminal (the crash class pi-tui reports as "Rendered line exceeds
+ * terminal width").
+ */
+function clampToWidth(styledLine: string, width: number): string {
     if (width <= 0) {
         return "";
     }
-    const chars = [...line];
-    if (chars.length <= width) {
-        return line;
-    }
-    return width >= 2
-        ? `${chars.slice(0, width - 1).join("")}…`
-        : chars.slice(0, width).join("");
+    return truncateToWidth(styledLine, width, "…");
 }
 
 export interface AdviceLines {
@@ -168,7 +169,10 @@ export class AdvicePresenter {
         this.ui.setWidget(ADVICE_WIDGET_KEY, (_tui, theme) => ({
             render: (width: number) =>
                 lines.map((line, index) =>
-                    theme.fg(colors[index] ?? "dim", clampToWidth(line, width)),
+                    clampToWidth(
+                        theme.fg(colors[index] ?? "dim", line),
+                        width,
+                    ),
                 ),
             invalidate: () => {},
         }));

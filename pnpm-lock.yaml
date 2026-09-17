@@ -223,6 +223,9 @@ importers:
       '@earendil-works/pi-coding-agent':
         specifier: ^0.85.1
         version: 0.85.1(supports-color@7.2.0)(ws@8.21.3)(zod@4.6.5)
+      '@earendil-works/pi-tui':
+        specifier: ^0.85.1
+        version: 0.85.1
       '@gotgenes/pi-permission-system':
         specifier: ^32.0.2
         version: 32.0.2(@earendil-works/pi-coding-agent@0.85.1)(@earendil-works/pi-tui@0.85.1)

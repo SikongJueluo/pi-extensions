@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import {
     ADVICE_WIDGET_KEY,
     AdvicePresenter,
@@ -8,8 +9,9 @@ import {
     type AdviceWidgetUi,
 } from "../src/advice/widget";
 
+/** ANSI-styled fake: invisible to truncateToWidth, like a real theme. */
 const theme: AdviceTheme = {
-    fg: (color, text) => `<${color}>${text}</>`,
+    fg: (_color, text) => `\x1b[35m${text}\x1b[0m`,
 };
 
 function render(component: AdviceComponent, width = 200): string[] {
@@ -139,12 +141,36 @@ describe("AdvicePresenter", () => {
         ) => AdviceComponent;
         const component = factory({}, theme);
         expect(render(component, 200)).toEqual([
-            "<accent>ai-judge defer — ambiguous intent</>",
+            "\x1b[35mai-judge defer — ambiguous intent\x1b[0m",
         ]);
-        expect(render(component, 10)[0]).toBe(
-            "<accent>ai-judge …</>",
-        );
+        const clamped = render(component, 10)[0]!;
+        expect(clamped.startsWith("\x1b[35mai-judge ")).toBe(true);
+        expect(clamped.endsWith("…"));
+        expect(visibleWidth(clamped)).toBeLessThanOrEqual(10);
         component.invalidate();
+    });
+
+    it("never renders wider than the terminal for CJK reasons", () => {
+        const ui = recordingUi();
+        const presenter = new AdvicePresenter(ui, true);
+        presenter.present("req-1", {
+            state: "judgment",
+            verdict: "defer",
+            reason: "命令会重写已发布的历史记录且用户意图未确立".repeat(10),
+            shadow: false,
+        });
+        const factory = ui.calls[0]!.content as (
+            tui: unknown,
+            theme: AdviceTheme,
+        ) => AdviceComponent;
+        const component = factory({}, theme);
+        for (const width of [5, 20, 80, 120]) {
+            const lines = render(component, width);
+            for (const line of lines) {
+                expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+            }
+        }
+        expect(visibleWidth(render(component, 20)[0]!)).toBeGreaterThan(0);
     });
 
     it("is a no-op end to end when disabled", () => {
